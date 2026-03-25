@@ -13,6 +13,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
 	"github.com/nextlevelbuilder/goclaw/internal/channels/discord"
 	"github.com/nextlevelbuilder/goclaw/internal/channels/feishu"
+	"github.com/nextlevelbuilder/goclaw/internal/channels/goconnect"
 	slackchannel "github.com/nextlevelbuilder/goclaw/internal/channels/slack"
 	"github.com/nextlevelbuilder/goclaw/internal/channels/telegram"
 	"github.com/nextlevelbuilder/goclaw/internal/channels/whatsapp"
@@ -95,6 +96,29 @@ func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, ms
 		} else {
 			channelMgr.RegisterChannel(channels.TypeFeishu, f)
 			slog.Info("feishu/lark channel enabled (config)")
+		}
+	}
+
+	if cfg.Channels.GoConnect.Enabled && cfg.Channels.GoConnect.BaseURL != "" && instanceLoader == nil {
+		gcCfg := goconnect.GoConnectConfig{
+			Enabled:        true,
+			BaseURL:        cfg.Channels.GoConnect.BaseURL,
+			APIKey:         cfg.Channels.GoConnect.APIKey,
+			WebhookToken:   cfg.Channels.GoConnect.WebhookToken,
+			BotUserID:      cfg.Channels.GoConnect.BotUserID,
+			BotUserCode:    cfg.Channels.GoConnect.BotUserCode,
+			AllowFrom:      cfg.Channels.GoConnect.AllowFrom,
+			DMPolicy:       cfg.Channels.GoConnect.DMPolicy,
+			GroupPolicy:    cfg.Channels.GoConnect.GroupPolicy,
+			RequireMention: cfg.Channels.GoConnect.RequireMention,
+			HistoryLimit:   cfg.Channels.GoConnect.HistoryLimit,
+		}
+		gc, err := goconnect.New(gcCfg, msgBus, nil)
+		if err != nil {
+			slog.Error("failed to initialize goconnect channel", "error", err)
+		} else {
+			channelMgr.RegisterChannel(channels.TypeGoConnect, gc)
+			slog.Info("goconnect channel enabled (config)")
 		}
 	}
 }

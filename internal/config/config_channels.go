@@ -20,7 +20,22 @@ type ChannelsConfig struct {
 	Zalo              ZaloConfig               `json:"zalo"`
 	ZaloPersonal      ZaloPersonalConfig       `json:"zalo_personal"`
 	Feishu            FeishuConfig             `json:"feishu"`
+	GoConnect         GoConnectConfig          `json:"goconnect"`
 	PendingCompaction *PendingCompactionConfig `json:"pending_compaction,omitempty"` // global pending message compaction settings
+}
+
+type GoConnectConfig struct {
+	Enabled        bool                `json:"enabled"`
+	BaseURL        string              `json:"base_url"`
+	APIKey         string              `json:"api_key"`
+	WebhookToken   string              `json:"webhook_token"`
+	BotUserID      string              `json:"bot_user_id"`
+	BotUserCode    string              `json:"bot_user_code"`
+	AllowFrom      FlexibleStringSlice `json:"allow_from"`
+	DMPolicy       string              `json:"dm_policy,omitempty"`
+	GroupPolicy    string              `json:"group_policy,omitempty"`
+	RequireMention *bool               `json:"require_mention,omitempty"`
+	HistoryLimit   int                 `json:"history_limit,omitempty"`
 }
 
 type TelegramConfig struct {

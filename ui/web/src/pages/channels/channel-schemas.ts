@@ -71,6 +71,13 @@ export const credentialsSchema: Record<string, FieldDef[]> = {
   whatsapp: [
     { key: "bridge_url", label: "Bridge URL", type: "text", required: true, placeholder: "http://bridge:3000" },
   ],
+  goconnect: [
+    { key: "base_url", label: "Chat Service URL", type: "text", required: true, placeholder: "http://chat-service:3000/api/v1/chatservice", help: "GoConnect Chat Service base URL" },
+    { key: "api_key", label: "API Key (License Key)", type: "password", required: true, help: "licenseKey for WebHookGuard authentication" },
+    { key: "bot_user_id", label: "Bot User ID", type: "text", required: true, placeholder: "UUID of bot on GoConnect" },
+    { key: "bot_user_code", label: "Bot User Code", type: "text", placeholder: "BOT_GO_CLAW_HR", help: "Convention: BOT_GO_CLAW_*" },
+    { key: "webhook_token", label: "Webhook Token", type: "password", help: "Shared secret for inbound webhook authentication" },
+  ],
 };
 
 // --- Config schemas ---
@@ -153,6 +160,13 @@ export const configSchema: Record<string, FieldDef[]> = {
     { key: "group_policy", label: "Group Policy", type: "select", options: groupPolicyOptions, defaultValue: "pairing" },
     { key: "allow_from", label: "Allowed Users", type: "tags", help: "WhatsApp user IDs" },
     { key: "block_reply", label: "Block Reply", type: "select", options: blockReplyOptions, defaultValue: "inherit", help: "Deliver intermediate text during tool iterations" },
+  ],
+  goconnect: [
+    { key: "dm_policy", label: "DM Policy", type: "select", options: dmPolicyOptions, defaultValue: "open" },
+    { key: "group_policy", label: "Group Policy", type: "select", options: groupPolicyOptions, defaultValue: "open" },
+    { key: "require_mention", label: "Require @mention in groups", type: "boolean", defaultValue: true, help: "Chat Service already does mention gating before forwarding" },
+    { key: "history_limit", label: "Group History Limit", type: "number", defaultValue: 50, help: "Max pending group messages for context (0 = disabled)" },
+    { key: "allow_from", label: "Allowed Users", type: "tags", help: "GoConnect user IDs (UUIDs)" },
   ],
 };
 

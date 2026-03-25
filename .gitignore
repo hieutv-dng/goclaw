@@ -46,6 +46,7 @@ k8s-*/*
 # Test credentials (never commit)
 tests/**/creds.json
 ui/simple-saas
+gcn-backend/
 *.tar
 # AI tool config directories (user-specific)
 .gemini/
