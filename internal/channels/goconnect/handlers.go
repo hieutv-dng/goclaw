@@ -213,7 +213,6 @@ func (c *Channel) handleInboundMessage(payload inboundWebhookPayload) {
 		"is_group":             fmt.Sprintf("%t", isGroup),
 		"local_key":            localKey,
 		"message_created_date": payload.MessageCreatedDate,
-		"message_id":           payload.MessageCreatedDate, // GoConnect uses created_date as message ID — needed for reactions and reply routing
 	}
 	if payload.RoomName != "" {
 		metadata["room_name"] = payload.RoomName

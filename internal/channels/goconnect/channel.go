@@ -166,25 +166,25 @@ func (c *Channel) SetPendingHistoryTenantID(id uuid.UUID) { c.groupHistory.SetTe
 
 // WebhookHandler returns the HTTP handler and path for mounting on the gateway mux.
 // Implements channels.WebhookChannel interface.
-// Comparable to Feishu/Slack webhook pattern.
+// Uses exact-path match (like Feishu) so POST requests are not 301-redirected.
 func (c *Channel) WebhookHandler() (string, http.Handler) {
-	mux := http.NewServeMux()
-
-	// POST /hooks/goconnect — receive inbound messages from Chat Service
-	mux.HandleFunc("POST "+webhookPath, c.handleWebhookHTTP)
-
-	// GET /hooks/goconnect/health — health check (no auth)
-	mux.HandleFunc("GET "+webhookPath+"/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{
-			"status":  "ok",
-			"channel": c.Name(),
-			"type":    "goconnect",
-		})
+	return webhookPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			c.handleWebhookHTTP(w, r)
+		case http.MethodGet:
+			// Health check (no auth)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{
+				"status":  "ok",
+				"channel": c.Name(),
+				"type":    "goconnect",
+			})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	})
-
-	return webhookPath + "/", mux
 }
 
 // SetPendingCompaction configures LLM-based auto-compaction for pending messages.
