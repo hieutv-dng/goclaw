@@ -36,6 +36,7 @@ type GoConnectConfig struct {
 	GroupPolicy    string              `json:"group_policy,omitempty"`
 	RequireMention *bool               `json:"require_mention,omitempty"`
 	HistoryLimit   int                 `json:"history_limit,omitempty"`
+	ReactionLevel  string              `json:"reaction_level,omitempty"`
 }
 
 type TelegramConfig struct {

@@ -88,6 +88,7 @@ type GoConnectConfig struct {
 	GroupPolicy    string   `json:"group_policy,omitempty"`
 	RequireMention *bool    `json:"require_mention,omitempty"`
 	HistoryLimit   int      `json:"history_limit,omitempty"`
+	ReactionLevel  string   `json:"reaction_level,omitempty"` // "off" (default), "minimal", "full"
 }
 
 // New creates a new GoConnect channel from config.
