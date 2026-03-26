@@ -237,6 +237,7 @@ func (c *Channel) handleInboundMessage(payload inboundWebhookPayload) {
 	// ── Publish to MessageBus (matching Telegram pattern exactly) ──
 	c.Bus().PublishInbound(bus.InboundMessage{
 		Channel:      c.Name(),
+		MessageID:    payload.MessageCreatedDate,
 		SenderID:     senderID,
 		ChatID:       chatID,
 		Content:      finalContent,
