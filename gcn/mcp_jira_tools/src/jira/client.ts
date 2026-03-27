@@ -345,6 +345,8 @@ export class JiraClient {
     spda: string;
     congDoan: string;
     dueDate: string;
+    assignee?: string;
+    epicKey?: string;
   }) {
     // Bước 1: Lấy danh sách options hợp lệ cho custom fields
     let spdaField: { value: string } | { id: string } = { value: payload.spda };
@@ -353,31 +355,28 @@ export class JiraClient {
     try {
       const meta = await this.getCreateMeta(payload.projectKey, payload.issueType);
 
-      // Auto-resolve SPDA option
+      // Auto-resolve SPDA — fuzzy match + top-3 suggestions nếu sai
       const spdaMeta = meta.fields["customfield_10100"];
       if (spdaMeta?.allowedValues) {
-        const match = this.findBestOption(spdaMeta.allowedValues, payload.spda);
-        if (match) {
-          spdaField = { id: match.id };
-        } else {
-          const options = spdaMeta.allowedValues.map(o => o.value || o.name).join(", ");
-          throw new Error(`Giá trị SPDA "${payload.spda}" không hợp lệ. Các giá trị khả dụng: ${options}`);
-        }
+        const resolved = this.resolveCustomFieldOption(
+          spdaMeta.allowedValues, payload.spda, "Mã SPDA"
+        );
+        spdaField = { id: resolved.id };
       }
 
-      // Auto-resolve Công đoạn option
+      // Auto-resolve Công đoạn — fuzzy match + top-3 suggestions nếu sai
       const congDoanMeta = meta.fields["customfield_10101"];
       if (congDoanMeta?.allowedValues) {
-        const match = this.findBestOption(congDoanMeta.allowedValues, payload.congDoan);
-        if (match) {
-          congDoanField = { id: match.id };
-        } else {
-          const options = congDoanMeta.allowedValues.map(o => o.value || o.name).join(", ");
-          throw new Error(`Giá trị Công đoạn "${payload.congDoan}" không hợp lệ. Các giá trị khả dụng: ${options}`);
-        }
+        const resolved = this.resolveCustomFieldOption(
+          congDoanMeta.allowedValues, payload.congDoan, "Công đoạn"
+        );
+        congDoanField = { id: resolved.id };
       }
     } catch (err: any) {
-      if (err.message.includes("không hợp lệ")) throw err; // Re-throw validation errors
+      // Re-throw validation errors (field không khớp)
+      if (err.message.startsWith("[Mã SPDA]") || err.message.startsWith("[Công đoạn]")) {
+        throw err;
+      }
 
       // Fallback: createmeta chậm/fail → đọc từ issue gần nhất
       try {
@@ -407,6 +406,25 @@ export class JiraClient {
 
     if (payload.parentKey) {
       fields.parent = { key: payload.parentKey };
+    }
+
+    // Assign thành viên — fuzzy match từ danh sách assignable users
+    if (payload.assignee) {
+      const resolvedAssignee = await this.resolveAssignee(
+        payload.projectKey,
+        payload.assignee
+      );
+      fields.assignee = { name: resolvedAssignee };
+    }
+
+    // Epic Link — customfield_10002 trên Jira Server VNPT
+    // (customfield_10008 là Cloud standard, VNPT Server dùng _10002)
+    if (payload.epicKey) {
+      const resolvedEpicKey = await this.resolveEpicKey(
+        payload.projectKey,
+        payload.epicKey
+      );
+      fields.customfield_10002 = resolvedEpicKey;
     }
 
     const res = await this.http.post("/issue", { fields });
@@ -483,7 +501,184 @@ export class JiraClient {
 
     return null;
   }
+
+  /**
+   * Wrapper của findBestOption với error message thông minh:
+   * - Nếu match → trả về { id, value }
+   * - Nếu không match → throw lỗi kèm top-3 gợi ý ranked by similarity
+   * @param fieldLabel - Tên field hiển thị trong error, VD: "Mã SPDA"
+   */
+  private resolveCustomFieldOption(
+    options: Array<{ id: string; value?: string; name?: string }>,
+    input: string,
+    fieldLabel: string
+  ): { id: string; value: string } {
+    // Thử fuzzy match trước
+    const match = this.findBestOption(options, input);
+    if (match) return match;
+
+    // Không match → rank tất cả options theo similarity, lấy top-3
+    const scored = options
+      .map(o => {
+        const label = o.value || o.name || "";
+        return { id: o.id, label, score: this.calcSimilarity(input, label) };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    const topSuggestions = scored
+      .slice(0, 3)
+      .map(s => `  • "${s.label}"`);
+
+    throw new Error(
+      `[${fieldLabel}] Không tìm thấy option khớp với "${input}".\n` +
+      `Gợi ý gần nhất:\n${topSuggestions.join("\n")}\n` +
+      `Dùng get_create_meta để xem đầy đủ danh sách.`
+    );
+  }
+
+  // ─── USERS & EPICS ─────────────────────────
+
+  /**
+   * Lấy danh sách users có thể assign cho project
+   * Jira Server endpoint: /user/assignable/search
+   */
+  async getAssignableUsers(projectKey: string) {
+    const res = await this.http.get("/user/assignable/search", {
+      params: {
+        project: projectKey,
+        maxResults: 50,
+      },
+    });
+    return res.data as Array<{
+      key: string;
+      name: string;
+      displayName: string;
+      emailAddress?: string;
+    }>;
+  }
+
+  /**
+   * Tìm danh sách Epic đang mở trong project
+   * Dùng để hiển thị gợi ý khi tạo issue mới
+   */
+  async searchEpics(projectKey: string) {
+    const res = await this.http.get("/search", {
+      params: {
+        jql: `project = ${projectKey} AND issuetype = Epic AND status not in (Done, Closed, Resolved) ORDER BY summary ASC`,
+        maxResults: 50,
+        fields: "summary,status",
+      },
+    });
+    return (res.data.issues || []) as Array<{
+      key: string;
+      fields: { summary: string; status: { name: string } };
+    }>;
+  }
+
+  // ─── RESOLVE HELPERS ─────────────────────────
+
+  /**
+   * Fuzzy-resolve assignee username từ danh sách assignable users.
+   * Ưu tiên: exact name → exact displayName → contains name/displayName/email
+   * Nếu không tìm thấy → throw error kèm top-3 gợi ý gần nhất.
+   */
+  private async resolveAssignee(projectKey: string, input: string): Promise<string> {
+    const users = await this.getAssignableUsers(projectKey);
+    const q = input.toLowerCase().trim();
+
+    // 1. Exact match trên name (username)
+    const exactName = users.find(u => u.name.toLowerCase() === q);
+    if (exactName) return exactName.name;
+
+    // 2. Exact match trên displayName
+    const exactDisplay = users.find(u => u.displayName.toLowerCase() === q);
+    if (exactDisplay) return exactDisplay.name;
+
+    // 3. Contains match trên name hoặc displayName hoặc email
+    const partialMatches = users.filter(u =>
+      u.name.toLowerCase().includes(q) ||
+      u.displayName.toLowerCase().includes(q) ||
+      (u.emailAddress || "").toLowerCase().includes(q) ||
+      q.includes(u.name.toLowerCase())
+    );
+    if (partialMatches.length === 1) return partialMatches[0].name;
+    if (partialMatches.length > 1) {
+      // Ưu tiên match đầu tiên của name trước
+      const prioritized = partialMatches.sort((a, b) =>
+        a.name.toLowerCase().startsWith(q) ? -1 :
+        b.name.toLowerCase().startsWith(q) ? 1 : 0
+      );
+      return prioritized[0].name;
+    }
+
+    // Không tìm thấy → đề xuất top-3 gợi ý
+    const suggestions = users
+      .map(u => ({ u, score: this.calcSimilarity(q, u.name + " " + u.displayName) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map(x => `  • "${x.u.name}" → ${x.u.displayName} (${x.u.emailAddress || "no email"})`);
+
+    throw new Error(
+      `Không tìm thấy user khớp với "${input}".\n` +
+      `Gợi ý gần nhất:\n${suggestions.join("\n")}\n` +
+      `Dùng get_create_meta để xem đầy đủ danh sách.`
+    );
+  }
+
+  /**
+   * Fuzzy-resolve Epic key từ danh sách epics đang mở.
+   * Ưu tiên: exact key → contains key → contains summary
+   * Nếu không tìm thấy → throw error kèm top-3 gợi ý gần nhất.
+   */
+  private async resolveEpicKey(projectKey: string, input: string): Promise<string> {
+    const epics = await this.searchEpics(projectKey);
+    const q = input.toLowerCase().trim();
+
+    // 1. Exact key match
+    const exactKey = epics.find(e => e.key.toLowerCase() === q);
+    if (exactKey) return exactKey.key;
+
+    // 2. Contains key
+    const keyMatch = epics.find(e => e.key.toLowerCase().includes(q) || q.includes(e.key.toLowerCase()));
+    if (keyMatch) return keyMatch.key;
+
+    // 3. Contains summary
+    const summaryMatches = epics.filter(e =>
+      e.fields.summary.toLowerCase().includes(q) ||
+      q.includes(e.fields.summary.toLowerCase().slice(0, 10))
+    );
+    if (summaryMatches.length >= 1) return summaryMatches[0].key;
+
+    // Không tìm thấy → đề xuất top-3 gợi ý
+    const suggestions = epics
+      .map(e => ({ e, score: this.calcSimilarity(q, e.key + " " + e.fields.summary) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map(x => `  • ${x.e.key} → "${x.e.fields.summary}" [${x.e.fields.status.name}]`);
+
+    throw new Error(
+      `Không tìm thấy Epic khớp với "${input}".\n` +
+      `Gợi ý gần nhất:\n${suggestions.join("\n")}\n` +
+      `Dùng get_create_meta để xem đầy đủ danh sách.`
+    );
+  }
+
+  /**
+   * Tính độ tương đồng đơn giản giữa 2 chuỗi (0-1)
+   * Dùng để sắp xếp gợi ý khi fuzzy match không ra kết quả
+   */
+  private calcSimilarity(a: string, b: string): number {
+    const aLower = a.toLowerCase();
+    const bLower = b.toLowerCase();
+    let score = 0;
+    // Cộng điểm cho mỗi ký tự chung liên tiếp
+    for (let i = 0; i < aLower.length; i++) {
+      if (bLower.includes(aLower[i])) score++;
+    }
+    return score / Math.max(aLower.length, bLower.length);
+  }
 }
+
 
 // Singleton instance — toàn bộ app dùng chung 1 client
 export const jiraClient = new JiraClient();

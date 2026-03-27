@@ -264,6 +264,8 @@ export function registerJiraTools(server: McpServer) {
     "- Mã SPDA: VNPT GoConnect\n" +
     "- Công đoạn: Nghiên cứu và phát triển\n" +
     "- Due Date: 2026-04-03\n" +
+    "- Assign cho: nghiath (optional)\n" +
+    "- Epic: GOCONNECT-100 (optional)\n" +
     "⚠️ PHẢI hỏi user xác nhận TRƯỚC KHI gọi tool này — hiển thị nội dung issue sẽ tạo cho user duyệt.",
     {
       projectKey: z.string().describe("Project key, VD: 'VNPTAI'"),
@@ -292,6 +294,20 @@ export function registerJiraTools(server: McpServer) {
       dueDate: z
         .string()
         .describe("Ngày hết hạn, format YYYY-MM-DD. VD: '2026-04-15'."),
+      assignee: z
+        .string()
+        .optional()
+        .describe(
+          "Username của người được assign. Dùng get_create_meta để xem danh sách user khả dụng. " +
+          "VD: 'nghiath', 'admin'. Bỏ trống = không assign."
+        ),
+      epicKey: z
+        .string()
+        .optional()
+        .describe(
+          "Key của Epic muốn liên kết. VD: 'GOCONNECT-100'. " +
+          "Dùng get_create_meta để xem danh sách Epic đang mở. Bỏ trống = không link Epic."
+        ),
     },
     withErrorHandler("create_issue", async (payload) => {
       const result = await jiraClient.createIssue(payload);
@@ -320,15 +336,14 @@ export function registerJiraTools(server: McpServer) {
         .describe("Loại issue: 'Task', 'Sub-task', 'Bug', 'Story'"),
     },
     withErrorHandler("get_create_meta", async ({ projectKey, issueTypeName }) => {
-      // Thử createmeta API trước
+      const lines: string[] = [
+        `📋 Create Meta — ${projectKey} / ${issueTypeName}`,
+        "",
+      ];
+
+      // ── 1. Custom fields (SPDA, Công đoạn, issuetype, priority) ──
       try {
         const meta = await jiraClient.getCreateMeta(projectKey, issueTypeName);
-
-        const lines: string[] = [
-          `📋 Create Meta — ${meta.projectKey} / ${meta.issueTypeName}`,
-          "",
-        ];
-
         for (const [fieldId, field] of Object.entries(meta.fields)) {
           if (field.allowedValues && field.allowedValues.length > 0) {
             lines.push(`### ${field.name} (${fieldId})`);
@@ -341,55 +356,73 @@ export function registerJiraTools(server: McpServer) {
             lines.push("");
           }
         }
-
-        return {
-          content: [{
-            type: "text",
-            text: lines.join("\n") + getChainHint("get_create_meta"),
-          }],
-        };
       } catch {
-        // Fallback: createmeta không khả dụng → tìm issue gần nhất rồi đọc custom fields
-        const searchData = await jiraClient.searchIssues(
-          `project = ${projectKey} ORDER BY created DESC`,
-          1
-        );
-        const latestIssue = searchData.issues?.[0];
-        if (!latestIssue) {
-          return {
-            content: [{ type: "text", text: `❌ Không tìm thấy issue nào trong project ${projectKey}` }],
-          };
+        // Fallback: createmeta không khả dụng → tìm issue gần nhất
+        lines.push(`⚠️ API createmeta không khả dụng — đọc từ issue gần nhất`, "");
+        try {
+          const searchData = await jiraClient.searchIssues(
+            `project = ${projectKey} ORDER BY created DESC`,
+            1
+          );
+          const latestIssue = searchData.issues?.[0];
+          if (latestIssue) {
+            const cfData = await jiraClient.getCustomFieldFromIssue(
+              latestIssue.key,
+              ["customfield_10100", "customfield_10101"]
+            );
+            if (cfData.customfield_10100) {
+              lines.push(`### SPDA (customfield_10100)`);
+              lines.push(`  • id: ${cfData.customfield_10100.id} → "${cfData.customfield_10100.value}"`);
+              lines.push("");
+            }
+            if (cfData.customfield_10101) {
+              lines.push(`### Công đoạn (customfield_10101)`);
+              lines.push(`  • id: ${cfData.customfield_10101.id} → "${cfData.customfield_10101.value}"`);
+              lines.push("");
+            }
+          }
+        } catch {
+          lines.push(`❌ Không thể đọc fallback data`, "");
         }
-
-        const cfData = await jiraClient.getCustomFieldFromIssue(
-          latestIssue.key,
-          ["customfield_10100", "customfield_10101"]
-        );
-
-        const lines: string[] = [
-          `📋 Create Meta (fallback) — ${projectKey} / ${issueTypeName}`,
-          `⚠️ API createmeta không khả dụng — đọc từ issue gần nhất`,
-          "",
-        ];
-
-        if (cfData.customfield_10100) {
-          lines.push(`### SPDA (customfield_10100)`);
-          lines.push(`  • id: ${cfData.customfield_10100.id} → "${cfData.customfield_10100.value}"`);
-          lines.push("");
-        }
-        if (cfData.customfield_10101) {
-          lines.push(`### Công đoạn (customfield_10101)`);
-          lines.push(`  • id: ${cfData.customfield_10101.id} → "${cfData.customfield_10101.value}"`);
-          lines.push("");
-        }
-
-        return {
-          content: [{
-            type: "text",
-            text: lines.join("\n") + getChainHint("get_create_meta"),
-          }],
-        };
       }
+
+      // ── 2. Assignable users ──
+      try {
+        const users = await jiraClient.getAssignableUsers(projectKey);
+        if (users.length > 0) {
+          lines.push(`### Assignable Users`);
+          lines.push(`Tổng: ${users.length} thành viên`);
+          for (const u of users) {
+            const email = u.emailAddress ? ` (${u.emailAddress})` : "";
+            lines.push(`  • name: "${u.name}" → ${u.displayName}${email}`);
+          }
+          lines.push("");
+        }
+      } catch {
+        lines.push(`⚠️ Không thể lấy danh sách users`, "");
+      }
+
+      // ── 3. Epics đang mở ──
+      try {
+        const epics = await jiraClient.searchEpics(projectKey);
+        if (epics.length > 0) {
+          lines.push(`### Epics đang mở`);
+          lines.push(`Tổng: ${epics.length} epic`);
+          for (const e of epics) {
+            lines.push(`  • ${e.key} → "${e.fields.summary}" [${e.fields.status.name}]`);
+          }
+          lines.push("");
+        }
+      } catch {
+        lines.push(`⚠️ Không thể lấy danh sách Epics`, "");
+      }
+
+      return {
+        content: [{
+          type: "text",
+          text: lines.join("\n") + getChainHint("get_create_meta"),
+        }],
+      };
     })
   );
 }
