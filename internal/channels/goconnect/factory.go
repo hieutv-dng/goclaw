@@ -28,6 +28,7 @@ type goconnectInstanceConfig struct {
 	RequireMention *bool    `json:"require_mention,omitempty"`  // Default: true
 	HistoryLimit   int      `json:"history_limit,omitempty"`    // Group history limit
 	AllowFrom      []string `json:"allow_from,omitempty"`       // Allowlist
+	ReactionLevel  string   `json:"reaction_level,omitempty"`   // "off" (default), "minimal", "full"
 }
 
 // Factory creates a GoConnect channel from DB instance data.
@@ -86,6 +87,7 @@ func buildChannel(name string, creds json.RawMessage, cfg json.RawMessage,
 		GroupPolicy:     ic.GroupPolicy,
 		RequireMention: ic.RequireMention,
 		HistoryLimit:   ic.HistoryLimit,
+		ReactionLevel:  ic.ReactionLevel,
 	}
 
 	// DB instances default to "open" for groups (GoConnect manages its own access control).

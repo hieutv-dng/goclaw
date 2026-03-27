@@ -166,6 +166,7 @@ export const configSchema: Record<string, FieldDef[]> = {
     { key: "group_policy", label: "Group Policy", type: "select", options: groupPolicyOptions, defaultValue: "open" },
     { key: "require_mention", label: "Require @mention in groups", type: "boolean", defaultValue: true, help: "Chat Service already does mention gating before forwarding" },
     { key: "history_limit", label: "Group History Limit", type: "number", defaultValue: 50, help: "Max pending group messages for context (0 = disabled)" },
+    { key: "reaction_level", label: "Reaction Level", type: "select", options: [{ value: "off", label: "Off" }, { value: "minimal", label: "Minimal (thinking + done)" }, { value: "full", label: "Full (all status emoji)" }], defaultValue: "off", help: "Show emoji reactions on user messages during agent processing" },
     { key: "allow_from", label: "Allowed Users", type: "tags", help: "GoConnect user IDs (UUIDs)" },
   ],
 };
