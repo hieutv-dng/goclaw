@@ -400,6 +400,16 @@ func (c *Channel) OnReactionEvent(ctx context.Context, chatID string, messageID 
 		return fmt.Errorf("goconnect channel not running")
 	}
 
+	// Gate by ReactionLevel config (matching Telegram/Slack pattern).
+	// "" or "off" → reactions disabled entirely.
+	if c.config.ReactionLevel == "" || c.config.ReactionLevel == "off" {
+		return nil
+	}
+	// "minimal" → only show terminal reactions (thinking + done), skip intermediate statuses.
+	if c.config.ReactionLevel == "minimal" && status != "thinking" && status != "done" && status != "error" {
+		return nil
+	}
+
 	emoji := statusToEmoji(status)
 	if emoji == "" {
 		slog.Debug("goconnect: no emoji mapping for status, skipping reaction",
