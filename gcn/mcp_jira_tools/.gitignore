@@ -2,6 +2,6 @@ node_modules/
 build/
 *.log
 .env*
-/.dist
+dist/
 .agent/
 !.env.example
