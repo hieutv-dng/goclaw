@@ -2,7 +2,6 @@
 """
 GoConnect File Upload Script
 Handles the 3-step presigned URL upload flow with initial chunk validation.
-Server auto-classifies files as IMAGES / VIDEOS / FILES based on MIME type.
 
 Usage:
     python3 upload_file.py \
@@ -25,22 +24,6 @@ import urllib.request
 import urllib.error
 
 CHUNK_SIZE = 256  # bytes to read for format validation
-
-# Extensions giống utils/index.ts trong ChatService
-IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "heic", "bmp", "webp"}
-VIDEO_EXTS = {"mp4", "mpg", "mpeg", "mov", "wmv", "avi", "avchd", "flv", "f4v", "mkv", "webm", "m4v"}
-
-
-def classify_content_type(mime: str, file_name: str) -> str:
-    """Phân loại file thành IMAGES/VIDEOS/FILES dựa trên MIME và extension.
-    Server tự phân loại — hàm này chỉ để hiển thị cho user biết."""
-    ext = os.path.splitext(file_name)[1].lstrip(".").lower()
-    mime_lower = (mime or "").lower()
-    if mime_lower.startswith("image/") or ext in IMAGE_EXTS:
-        return "IMAGES"
-    if mime_lower.startswith("video/") or ext in VIDEO_EXTS:
-        return "VIDEOS"
-    return "FILES"
 
 
 def read_initial_chunk(file_path: str) -> str:
@@ -120,8 +103,7 @@ def main():
     connector_base = f"{args.base_url.rstrip('/')}/api/v1/chatservice/goclaw-connector/webhook"
 
     # ── Step 1: file-init ──
-    content_category = classify_content_type(mime_type, file_name)
-    print(f"[1/3] file-init: {file_name} ({file_size} bytes, {mime_type}) → {content_category}")
+    print(f"[1/3] file-init: {file_name} ({file_size} bytes, {mime_type})")
     init_resp = api_call(f"{connector_base}/file-init", args.api_key, {
         "room_id": args.room_id,
         "file_name": file_name,
@@ -173,7 +155,6 @@ def main():
         "file_name": file_name,
         "file_size": file_size,
         "mime_type": mime_type,
-        "content_category": content_category,
         "room_id": args.room_id,
     }
     print(json.dumps(result))
