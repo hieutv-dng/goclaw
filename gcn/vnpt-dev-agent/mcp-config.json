@@ -1,0 +1,48 @@
+{
+  "server": {
+    "name": "vnpt-dev-agent",
+    "version": "1.0.0"
+  },
+  "defaults": {
+    "stack": "auto",
+    "topK": 5,
+    "recentFileWindowMinutes": 480,
+    "maxFileSizeKb": 50
+  },
+  "paths": {
+    "teamContext": "TEAM_CONTEXT.md",
+    "gitStandard": [
+      "GIT_STANDARD.md",
+      "docs/GIT_STANDARD.md",
+      ".docs/GIT_STANDARD.md",
+      "CONTRIBUTING.md"
+    ],
+    "securityPatterns": "SECURITY_PATTERNS.md",
+    "feedbackStore": ".vnpt-dev-agent/feedback-store.json",
+    "metricsStore": ".vnpt-dev-agent/metrics-store.json"
+  },
+  "git": {
+    "branchPrefixes": {
+      "feature": "feature",
+      "fix": "fix",
+      "docs": "docs",
+      "refactor": "refactor",
+      "test": "test",
+      "chore": "chore",
+      "hotfix": "hotfix"
+    },
+    "commitTypes": ["feat", "fix", "docs", "refactor", "test", "chore", "style", "perf", "ci", "build"]
+  },
+  "safety": {
+    "requireConfirmation": [
+      "log_work",
+      "update_issue_status",
+      "create_issue",
+      "submit_task_feedback",
+      "track_metric",
+      "update_team_context",
+      "generate_worklog"
+    ],
+    "requireTestedBeforeSubmit": true
+  }
+}
