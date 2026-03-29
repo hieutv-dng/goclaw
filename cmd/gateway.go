@@ -111,7 +111,10 @@ func runGateway() {
 	// Bootstrap files live in Postgres.
 
 	// Detect server IPs for output scrubbing (prevents IP leaks via web_fetch, exec, etc.)
-	tools.DetectServerIPs(context.Background())
+	// Skip for desktop/lite — localhost-only, no multi-tenant exposure risk
+	if !edition.Current().IsLimited() {
+		tools.DetectServerIPs(context.Background())
+	}
 
 	toolsReg, execApprovalMgr, mcpMgr, sandboxMgr, browserMgr, webFetchTool, ttsTool, permPE, toolPE, dataDir, agentCfg := setupToolRegistry(cfg, workspace, providerRegistry)
 	if browserMgr != nil {
@@ -874,12 +877,14 @@ func runGateway() {
 
 	// Start heartbeat ticker (routes through scheduler's cron lane)
 	heartbeatTicker := heartbeat.NewTicker(heartbeat.TickerConfig{
-		Store:    pgStores.Heartbeats,
-		Agents:   pgStores.Agents,
-		Sessions: pgStores.Sessions,
-		MsgBus:   msgBus,
-		Sched:    sched,
-		RunAgent: makeHeartbeatRunFn(sched),
+		Store:         pgStores.Heartbeats,
+		Agents:        pgStores.Agents,
+		Sessions:      pgStores.Sessions,
+		ProviderStore: pgStores.Providers,
+		ProviderReg:   providerRegistry,
+		MsgBus:        msgBus,
+		Sched:         sched,
+		RunAgent:      makeHeartbeatRunFn(sched),
 	})
 	heartbeatTicker.SetOnEvent(func(event store.HeartbeatEvent) {
 		server.BroadcastEvent(*protocol.NewEvent(protocol.EventHeartbeat, event))
@@ -944,7 +949,7 @@ func runGateway() {
 		}
 
 		// Clear activity on terminal events
-		if agentEvent.Type == protocol.AgentEventRunCompleted || agentEvent.Type == protocol.AgentEventRunFailed {
+		if agentEvent.Type == protocol.AgentEventRunCompleted || agentEvent.Type == protocol.AgentEventRunFailed || agentEvent.Type == protocol.AgentEventRunCancelled {
 			if sessionKey := agentRouter.SessionKeyForRun(agentEvent.RunID); sessionKey != "" {
 				agentRouter.ClearActivity(sessionKey)
 			}
@@ -1137,7 +1142,7 @@ func runGateway() {
 	if strings.Contains(cfg.Database.PostgresDSN, ":goclaw@") {
 		slog.Warn("security.default_db_password: using default Postgres password — run ./prepare-env.sh to generate a strong one")
 	}
-	if len(cfg.Gateway.AllowedOrigins) == 0 {
+	if len(cfg.Gateway.AllowedOrigins) == 0 && !edition.Current().IsLimited() {
 		slog.Warn("security.cors_open: no allowed_origins configured — all WebSocket origins accepted. Set gateway.allowed_origins for production")
 	}
 
