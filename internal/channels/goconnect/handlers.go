@@ -230,7 +230,7 @@ func (c *Channel) handleInboundMessage(payload inboundWebhookPayload) {
 			c.Type(), c.Name(),
 			senderID, senderID,
 			payload.UserName, "", // GoConnect doesn't have username distinct from display name
-			peerKind,
+			peerKind, "user",
 		)
 	}
 
