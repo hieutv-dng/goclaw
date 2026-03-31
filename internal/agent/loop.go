@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -20,7 +21,29 @@ import (
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
 
-func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) {
+// indexedResult holds the output of a single parallel tool execution, preserving
+// the original call index so results can be sorted back into deterministic order.
+type indexedResult struct {
+	idx          int
+	tc           providers.ToolCall
+	registryName string
+	result       *tools.Result
+	argsJSON     string
+	spanStart    time.Time
+}
+
+func (l *Loop) runLoop(ctx context.Context, req RunRequest) (result *RunResult, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 8192)
+			n := runtime.Stack(buf, false)
+			slog.Error("agent loop panicked", "agent", l.id, "session", req.SessionKey,
+				"panic", fmt.Sprint(r), "stack", string(buf[:n]))
+			result = nil
+			err = fmt.Errorf("agent loop panic: %v", r)
+		}
+	}()
+
 	// Per-run emit wrapper: enriches every AgentEvent with delegation + routing context.
 	emitRun := func(event AgentEvent) {
 		event.RunKind = req.RunKind
@@ -239,13 +262,23 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 		if tid := store.TenantIDFromContext(ctx); tid != uuid.Nil {
 			chatReq.Options[providers.OptTenantID] = tid.String()
 		}
-		if l.thinkingLevel != "" && l.thinkingLevel != "off" {
-			if tc, ok := provider.(providers.ThinkingCapable); ok && tc.SupportsThinking() {
-				chatReq.Options[providers.OptThinkingLevel] = l.thinkingLevel
-			} else {
-				slog.Debug("thinking_level ignored: provider does not support thinking",
-					"provider", provider.Name(), "level", l.thinkingLevel)
-			}
+		reasoningDecision := providers.ResolveReasoningDecision(
+			provider,
+			model,
+			l.reasoningConfig.Effort,
+			l.reasoningConfig.Fallback,
+			l.reasoningConfig.Source,
+		)
+		if effort := reasoningDecision.RequestEffort(); effort != "" {
+			chatReq.Options[providers.OptThinkingLevel] = effort
+		}
+		if reasoningDecision.Reason != "" {
+			slog.Debug("reasoning normalized",
+				"provider", provider.Name(),
+				"model", model,
+				"requested", reasoningDecision.RequestedEffort,
+				"effective", reasoningDecision.EffectiveEffort,
+				"reason", reasoningDecision.Reason)
 		}
 
 		// Call LLM (streaming or non-streaming)
@@ -253,6 +286,9 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 		var err error
 
 		callCtx := providers.WithChatGPTOAuthRoutingObservation(ctx, providers.NewChatGPTOAuthRoutingObservation())
+		if reasoningDecision.HasObservation() {
+			callCtx = providers.WithReasoningDecision(callCtx, reasoningDecision)
+		}
 		llmSpanStart := time.Now().UTC()
 		llmSpanID := l.emitLLMSpanStart(callCtx, llmSpanStart, rs.iteration, messages)
 
@@ -339,8 +375,8 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 			}
 
 			// Phase 1: Prune old tool results before resorting to full compaction (at 70% of budget).
-			if historyTokens >= int(float64(historyBudget)*0.7) && !rs.midLoopPruned {
-				rs.midLoopPruned = true
+			// Re-triggers each iteration — new tool results may have grown context since last prune.
+			if historyTokens >= int(float64(historyBudget)*0.7) {
 				pruned := pruneContextMessages(messages, l.contextWindow, l.contextPruningCfg)
 				if len(pruned) > 0 {
 					messages = pruned
@@ -551,14 +587,6 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 			// Each goroutine performs lazy MCP activation + policy checking independently.
 			// Tool instances are immutable (context-based) so concurrent access is safe.
 			// Results are collected then processed sequentially for deterministic ordering.
-			type indexedResult struct {
-				idx          int
-				tc           providers.ToolCall
-				registryName string
-				result       *tools.Result
-				argsJSON     string
-				spanStart    time.Time
-			}
 
 			// 1. Emit all tool.call events upfront (client sees all calls starting)
 			for _, tc := range resp.ToolCalls {
@@ -625,10 +653,21 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 			// Close channel after all goroutines complete (run in separate goroutine to avoid deadlock)
 			go func() { wg.Wait(); close(resultCh) }()
 
-			// 3. Collect results
+			// 3. Collect results (respect context cancellation to allow /stop)
 			collected := make([]indexedResult, 0, len(resp.ToolCalls))
-			for r := range resultCh {
-				collected = append(collected, r)
+		collectLoop:
+			for range resp.ToolCalls {
+				select {
+				case r, ok := <-resultCh:
+					if !ok {
+						break collectLoop
+					}
+					collected = append(collected, r)
+				case <-ctx.Done():
+					// Trade-off: responsive /stop cancellation skips finalizeRun() cleanup
+					// (bootstrap cleanup, message flush). Stuck agent is worse than lost finalization.
+					return nil, ctx.Err()
+				}
 			}
 
 			// 4. Sort by original index → deterministic message ordering
