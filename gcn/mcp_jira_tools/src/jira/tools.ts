@@ -3,6 +3,7 @@ import { z } from "zod";
 import { jiraClient } from "./client.js";
 import { formatIssueForAI, formatIssueListForAI } from "./formatter.js";
 import { withErrorHandler, getChainHint } from "../shared/index.js";
+import { getCurrentPat, updatePat, validatePat } from "./pat-manager.js";
 
 // ─────────────────────────────────────────────
 // registerJiraTools: đăng ký tất cả Jira tools
@@ -147,6 +148,7 @@ export function registerJiraTools(server: McpServer) {
     })
   );
 
+  // ── TOOL 2: Lấy chi tiết 1 issue ─────────────
   server.tool(
     "get_issue_detail",
     "Đọc toàn bộ thông tin chi tiết của 1 Jira issue: mô tả đầy đủ, " +
@@ -208,106 +210,82 @@ export function registerJiraTools(server: McpServer) {
     })
   );
 
-  // ── TOOL 4: Cập nhật trạng thái issue ───────
+  // ── TOOL 4: Cập nhật issue (transition + comment) ───────
   server.tool(
-    "update_issue_status",
-    "Chuyển trạng thái (status) của một Jira issue sang trạng thái mới. " +
-    "Ví dụ: chuyển từ 'Open' sang 'In Progress' khi bắt đầu làm, " +
-    "hoặc sang 'Done'/'Resolved' khi xong. " +
-    "Hỗ trợ gửi kèm Resolution (Done/Fixed) và Comment khi đóng task. " +
-    "⚠️ PHẢI hỏi user xác nhận TRƯỚC KHI gọi tool này — TUYỆT ĐỐI không tự động chuyển trạng thái. " +
-    "User cần test và verify trước khi thay đổi status.",
+    "update_issue",
+    "Cập nhật Jira issue: chuyển trạng thái, thêm comment, hoặc xem transitions khả dụng. " +
+    "Dùng dryRun=true để xem danh sách transitions mà không thay đổi gì. " +
+    "Truyền chỉ comment (không transitionName) để thêm ghi chú mà không đổi status. " +
+    "Truyền transitionName để chuyển trạng thái (kèm comment, resolution nếu cần). " +
+    "⚠️ PHẢI hỏi user xác nhận TRƯỚC KHI thay đổi status hoặc thêm comment.",
     {
-      issueKey: z
-        .string()
-        .describe("Jira issue key, VD: 'VNPTAI-123'"),
-      transitionName: z
-        .string()
-        .describe("Tên trạng thái muốn chuyển sang, VD: 'In Progress', 'In Review', 'Done', 'Resolved'"),
-      resolution: z
-        .string()
-        .optional()
-        .describe("Resolution khi đóng task. VD: 'Done', 'Fixed', 'Won\\'t Do'. Chỉ cần khi chuyển sang Done/Resolved."),
-      comment: z
-        .string()
-        .optional()
-        .describe("Ghi chú kèm theo khi chuyển trạng thái. VD: 'Đã fix bug và test trên staging.'"),
+      issueKey: z.string().describe("Jira issue key, VD: 'VNPTAI-123'"),
+      dryRun: z.boolean().default(false)
+        .describe("true = chỉ xem transitions khả dụng, không thay đổi gì"),
+      transitionName: z.string().optional()
+        .describe("Tên trạng thái muốn chuyển. VD: 'In Progress', 'Done'. Bỏ trống nếu chỉ muốn comment."),
+      resolution: z.string().optional()
+        .describe("Resolution khi đóng task. VD: 'Done', 'Fixed'. Chỉ cần khi chuyển sang Done/Resolved."),
+      comment: z.string().optional()
+        .describe("Ghi chú kèm theo. Có thể dùng độc lập (không cần transitionName) hoặc kèm transition."),
     },
-    withErrorHandler("update_issue_status", async ({ issueKey, transitionName, resolution, comment }) => {
-      // Lấy danh sách transitions có thể làm
-      const transitions = await jiraClient.getTransitions(issueKey);
-      const available = transitions.map((t) => `"${t.name}"`).join(", ");
+    withErrorHandler("update_issue", async ({ issueKey, dryRun, transitionName, comment, resolution }) => {
+      // Case 1: dryRun — chỉ list transitions
+      if (dryRun) {
+        const transitions = await jiraClient.getTransitions(issueKey);
+        const list = transitions.map((t) => `  • ${t.name} (id: ${t.id})`).join("\n");
+        return {
+          content: [{
+            type: "text",
+            text: `Các transition khả dụng cho ${issueKey}:\n${list}` + getChainHint("update_issue"),
+          }],
+        };
+      }
 
-      const result = await jiraClient.transitionIssue(issueKey, transitionName, {
-        resolution,
-        comment,
-      });
+      // Case 2: chỉ comment (không transition)
+      if (!transitionName && comment) {
+        await jiraClient.addComment(issueKey, comment);
+        return {
+          content: [{
+            type: "text",
+            text: `✅ Đã thêm comment vào ${issueKey}:\n\n> ${comment}` + getChainHint("update_issue"),
+          }],
+        };
+      }
+
+      // Case 3: không có gì để làm
+      if (!transitionName && !comment) {
+        return {
+          content: [{
+            type: "text",
+            text: `⚠️ Không có thay đổi — truyền transitionName để đổi status, comment để thêm ghi chú, hoặc dryRun=true để xem transitions.`,
+          }],
+        };
+      }
+
+      // Case 4: transition (± comment, ± resolution)
+      // transitionIssue() gọi getTransitions() internally — không cần gọi trước
+      await jiraClient.transitionIssue(issueKey, transitionName!, { resolution, comment });
 
       const lines = [
-        `✅ Đã cập nhật trạng thái thành công!`,
+        `✅ Đã cập nhật thành công!`,
         `📌 Issue: ${issueKey}`,
         `🔄 Trạng thái mới: ${transitionName}`,
       ];
-      if (resolution) {
-        lines.push(`✔️ Resolution: ${resolution}`);
-      }
-      if (comment) {
-        lines.push(`💬 Comment: "${comment}"`);
-      }
-      lines.push("", `💡 Các transition có thể dùng: ${available}`);
+      if (resolution) lines.push(`✔️ Resolution: ${resolution}`);
+      if (comment) lines.push(`💬 Comment: "${comment}"`);
 
       return {
-        content: [{ type: "text", text: lines.join("\n") + getChainHint("update_issue_status") }],
+        content: [{ type: "text", text: lines.join("\n") + getChainHint("update_issue") }],
       };
     })
   );
 
-  // ── TOOL 5: Xem transitions có thể dùng ─────
-  server.tool(
-    "get_available_transitions",
-    "Xem danh sách các trạng thái có thể chuyển của một issue. " +
-    "Dùng khi không chắc tên transition chính xác trong workflow của project.",
-    {
-      issueKey: z.string().describe("Jira issue key"),
-    },
-    withErrorHandler("get_available_transitions", async ({ issueKey }) => {
-      const transitions = await jiraClient.getTransitions(issueKey);
-      const list = transitions.map((t) => `  • ${t.name} (id: ${t.id})`).join("\n");
-      return {
-        content: [{
-          type: "text",
-          text: `Các transition có thể thực hiện cho ${issueKey}:\n${list}` + getChainHint("get_available_transitions"),
-        }],
-      };
-    })
-  );
-
-  // ── TOOL 5b: Thêm comment vào issue ─────────
-  server.tool(
-    "add_comment",
-    "Thêm comment vào một Jira issue. " +
-    "Dùng khi cần ghi chú tiến độ, feedback, hoặc kết quả test. " +
-    "⚠️ PHẢI hỏi user xác nhận TRƯỚC KHI gửi comment.",
-    {
-      issueKey: z.string().describe("Jira issue key, VD: 'VNPTAI-123'"),
-      comment: z.string().describe("Nội dung comment"),
-    },
-    withErrorHandler("add_comment", async ({ issueKey, comment }) => {
-      await jiraClient.addComment(issueKey, comment);
-      return {
-        content: [{
-          type: "text",
-          text: `✅ Đã thêm comment vào ${issueKey}:\n\n> ${comment}` + getChainHint("add_comment"),
-        }],
-      };
-    })
-  );
-
-  // ── TOOL 6: Tạo issue mới ───────────────────
-  // (Dùng cho tính năng tạo sub-task từ .md — Phase 4)
+  // ── TOOL 6: Tạo issue mới (hoặc xem metadata với dryRun) ───────
   server.tool(
     "create_issue",
     "Tạo một Jira issue mới (Task, Sub-task, Bug, Story). " +
+    "Dùng dryRun=true để xem metadata (custom fields, users, epics) — không tạo issue. " +
     "Dùng khi phân rã một task lớn thành các sub-task nhỏ hơn, " +
     "hoặc khi tạo task từ file mô tả nghiệp vụ .md. " +
     "Nếu người dùng yêu cầu tạo task mới như 'tạo task mới cho tôi nhé', hãy yêu cầu họ cung cấp các thông tin dựa trên ví dụ sau:\n" +
@@ -325,36 +303,43 @@ export function registerJiraTools(server: McpServer) {
     "⚠️ PHẢI hỏi user xác nhận TRƯỚC KHI gọi tool này — hiển thị nội dung issue sẽ tạo cho user duyệt.",
     {
       projectKey: z.string().describe("Project key, VD: 'VNPTAI'"),
-      summary: z.string().describe("Tiêu đề ngắn gọn của issue"),
-      description: z.string().describe("Mô tả chi tiết issue"),
+      dryRun: z.boolean().default(false)
+        .describe("true = chỉ xem metadata (custom fields, users, epics) — không tạo issue"),
       issueType: z
         .enum(["Task", "Sub-task", "Bug", "Story"])
         .default("Task")
         .describe("Loại issue"),
+      summary: z.string().optional().describe("Tiêu đề ngắn gọn của issue (bắt buộc khi tạo issue)"),
+      description: z.string().optional().describe("Mô tả chi tiết issue (bắt buộc khi tạo issue)"),
       parentKey: z
         .string()
         .optional()
         .describe("Key của issue cha — bắt buộc nếu issueType là Sub-task"),
       priority: z
         .enum(["Highest", "High", "Medium", "Low", "Lowest"])
-        .describe("Mức độ ưu tiên"),
+        .optional()
+        .describe("Mức độ ưu tiên (bắt buộc khi tạo issue)"),
       labels: z
         .array(z.string())
-        .describe("Danh sách labels, VD: ['backend', 'urgent']"),
+        .optional()
+        .describe("Danh sách labels, VD: ['backend', 'urgent'] (bắt buộc khi tạo issue)"),
       spda: z
         .string()
-        .describe("Mã SPDA (customfield_10100). VD: 'VNPT GoConnect'"),
+        .optional()
+        .describe("Mã SPDA (customfield_10100). VD: 'VNPT GoConnect' (bắt buộc khi tạo issue)"),
       congDoan: z
         .string()
-        .describe("Công đoạn (customfield_10101). VD: 'Nghiên cứu và phát triển', 'Triển khai'"),
+        .optional()
+        .describe("Công đoạn (customfield_10101). VD: 'Nghiên cứu và phát triển' (bắt buộc khi tạo issue)"),
       dueDate: z
         .string()
-        .describe("Ngày hết hạn, format YYYY-MM-DD. VD: '2026-04-15'."),
+        .optional()
+        .describe("Ngày hết hạn, format YYYY-MM-DD. VD: '2026-04-15' (bắt buộc khi tạo issue)"),
       assignee: z
         .string()
         .optional()
         .describe(
-          "Username của người được assign. Dùng get_create_meta để xem danh sách user khả dụng. " +
+          "Username của người được assign. Dùng dryRun=true để xem danh sách user khả dụng. " +
           "VD: 'nghiath', 'admin'. Bỏ trống = không assign."
         ),
       epicKey: z
@@ -362,11 +347,123 @@ export function registerJiraTools(server: McpServer) {
         .optional()
         .describe(
           "Key của Epic muốn liên kết. VD: 'GOCONNECT-100'. " +
-          "Dùng get_create_meta để xem danh sách Epic đang mở. Bỏ trống = không link Epic."
+          "Dùng dryRun=true để xem danh sách Epic đang mở. Bỏ trống = không link Epic."
         ),
     },
     withErrorHandler("create_issue", async (payload) => {
-      const result = await jiraClient.createIssue(payload);
+      // ── dryRun: trả metadata (thay thế get_create_meta) ──
+      if (payload.dryRun) {
+        const lines: string[] = [
+          `📋 Create Meta — ${payload.projectKey} / ${payload.issueType}`,
+          "",
+        ];
+
+        // 1. Custom fields (SPDA, Công đoạn, issuetype, priority)
+        try {
+          const meta = await jiraClient.getCreateMeta(payload.projectKey, payload.issueType);
+          for (const [fieldId, field] of Object.entries(meta.fields)) {
+            if (field.allowedValues && field.allowedValues.length > 0) {
+              lines.push(`### ${field.name} (${fieldId})`);
+              lines.push(`Required: ${field.required ? "✅" : "❌"}`);
+              lines.push("Options:");
+              for (const opt of field.allowedValues) {
+                const label = opt.value || opt.name || "N/A";
+                lines.push(`  • id: ${opt.id} → "${label}"`);
+              }
+              lines.push("");
+            }
+          }
+        } catch {
+          lines.push(`⚠️ API createmeta không khả dụng — đọc từ issue gần nhất`, "");
+          try {
+            const searchData = await jiraClient.searchIssues(
+              `project = ${payload.projectKey} ORDER BY created DESC`,
+              1
+            );
+            const latestIssue = searchData.issues?.[0];
+            if (latestIssue) {
+              const cfData = await jiraClient.getCustomFieldFromIssue(
+                latestIssue.key,
+                ["customfield_10100", "customfield_10101"]
+              );
+              if (cfData.customfield_10100) {
+                lines.push(`### SPDA (customfield_10100)`);
+                lines.push(`  • id: ${cfData.customfield_10100.id} → "${cfData.customfield_10100.value}"`);
+                lines.push("");
+              }
+              if (cfData.customfield_10101) {
+                lines.push(`### Công đoạn (customfield_10101)`);
+                lines.push(`  • id: ${cfData.customfield_10101.id} → "${cfData.customfield_10101.value}"`);
+                lines.push("");
+              }
+            }
+          } catch {
+            lines.push(`❌ Không thể đọc fallback data`, "");
+          }
+        }
+
+        // 2. Assignable users
+        try {
+          const users = await jiraClient.getAssignableUsers(payload.projectKey);
+          if (users.length > 0) {
+            lines.push(`### Assignable Users`);
+            lines.push(`Tổng: ${users.length} thành viên`);
+            for (const u of users) {
+              const email = u.emailAddress ? ` (${u.emailAddress})` : "";
+              lines.push(`  • name: "${u.name}" → ${u.displayName}${email}`);
+            }
+            lines.push("");
+          }
+        } catch {
+          lines.push(`⚠️ Không thể lấy danh sách users`, "");
+        }
+
+        // 3. Epics đang mở
+        try {
+          const epics = await jiraClient.searchEpics(payload.projectKey);
+          if (epics.length > 0) {
+            lines.push(`### Epics đang mở`);
+            lines.push(`Tổng: ${epics.length} epic`);
+            for (const e of epics) {
+              lines.push(`  • ${e.key} → "${e.fields.summary}" [${e.fields.status.name}]`);
+            }
+            lines.push("");
+          }
+        } catch {
+          lines.push(`⚠️ Không thể lấy danh sách Epics`, "");
+        }
+
+        return {
+          content: [{ type: "text", text: lines.join("\n") + getChainHint("create_issue") }],
+        };
+      }
+
+      // ── Tạo issue: validate required fields ──
+      if (!payload.summary || !payload.description || !payload.priority ||
+          !payload.labels || !payload.spda || !payload.congDoan || !payload.dueDate) {
+        return {
+          content: [{
+            type: "text",
+            text: "❌ Thiếu field bắt buộc. Khi tạo issue cần: summary, description, priority, labels, spda, congDoan, dueDate.\n" +
+                  "💡 Dùng dryRun=true để xem danh sách giá trị hợp lệ trước.",
+          }],
+        };
+      }
+
+      const result = await jiraClient.createIssue({
+        projectKey: payload.projectKey,
+        summary: payload.summary,
+        description: payload.description,
+        issueType: payload.issueType,
+        parentKey: payload.parentKey,
+        priority: payload.priority,
+        labels: payload.labels,
+        spda: payload.spda,
+        congDoan: payload.congDoan,
+        dueDate: payload.dueDate,
+        assignee: payload.assignee,
+        epicKey: payload.epicKey,
+      });
       return {
         content: [{
           type: "text",
@@ -378,106 +475,107 @@ export function registerJiraTools(server: McpServer) {
     })
   );
 
-  // ── TOOL 7: Lấy metadata tạo issue ─────────
+  // ── TOOL 8: Quản lý Jira PAT ────────────────
   server.tool(
-    "get_create_meta",
-    "Lấy danh sách các giá trị hợp lệ (options) cho các field khi tạo issue. " +
-    "Trả về allowed values cho custom fields như SPDA, Công đoạn, Issue Type. " +
-    "Dùng TRƯỚC khi tạo issue để biết chính xác giá trị nào được phép.",
+    "manage_jira_pat",
+    "Quản lý Personal Access Token (PAT) của Jira. " +
+    "Hỗ trợ 2 hành động:\n" +
+    "- 'view': Xem PAT hiện tại (đã mask) và đường dẫn file .env\n" +
+    "- 'update': Cập nhật PAT mới — ghi vào .env và reload ngay trong session hiện tại\n" +
+    "Dùng khi PAT hết hạn, bị revoke, hoặc cần đổi sang account khác.\n" +
+    "⚠️ PHẢI xác nhận với user TRƯỚC KHI cập nhật PAT.",
     {
-      projectKey: z.string().describe("Project key, VD: 'GOCONNECT'"),
-      issueTypeName: z
+      action: z
+        .enum(["view", "update"])
+        .describe("Hành động: 'view' = xem PAT hiện tại (masked), 'update' = cập nhật PAT mới"),
+      newPat: z
         .string()
-        .default("Task")
-        .describe("Loại issue: 'Task', 'Sub-task', 'Bug', 'Story'"),
+        .optional()
+        .describe("PAT mới — bắt buộc khi action = 'update'. Lấy tại: Jira → Profile → Personal Access Tokens → Create Token"),
     },
-    withErrorHandler("get_create_meta", async ({ projectKey, issueTypeName }) => {
-      const lines: string[] = [
-        `📋 Create Meta — ${projectKey} / ${issueTypeName}`,
+    withErrorHandler("manage_jira_pat", async ({ action, newPat }) => {
+      if (action === "view") {
+        const info = getCurrentPat();
+        const lines = [
+          `🔑 **Jira PAT — Thông tin hiện tại**`,
+          "",
+          `📁 File .env: \`${info.envPath}\``,
+          `📄 File tồn tại: ${info.exists ? "✅ Có" : "❌ Không"}`,
+          `🔐 PAT hiện tại: \`${info.masked}\``,
+          `🌐 Jira URL: \`${process.env.JIRA_BASE_URL || "(chưa cấu hình)"}\``,
+        ];
+
+        if (!info.pat) {
+          lines.push(
+            "",
+            "⚠️ **PAT chưa được cấu hình hoặc file .env không tồn tại.**",
+            "Hướng dẫn lấy PAT:",
+            "1. Đăng nhập Jira → Click avatar → Profile",
+            "2. Vào Personal Access Tokens → Create Token",
+            "3. Copy token và dùng action 'update' để cập nhật"
+          );
+        }
+
+        return {
+          content: [{ type: "text", text: lines.join("\n") }],
+        };
+      }
+
+      // ── Action: update ──
+      if (!newPat) {
+        return {
+          content: [{
+            type: "text",
+            text: "❌ Thiếu tham số `newPat`. Khi action = 'update', bạn phải cung cấp PAT mới.\n\n" +
+                  "Hướng dẫn lấy PAT:\n" +
+                  "1. Đăng nhập Jira → Click avatar → Profile\n" +
+                  "2. Vào Personal Access Tokens → Create Token\n" +
+                  "3. Copy token và truyền vào tham số `newPat`",
+          }],
+        };
+      }
+
+      // Validate PAT
+      const validation = validatePat(newPat);
+      if (!validation.valid) {
+        return {
+          content: [{
+            type: "text",
+            text: `❌ PAT không hợp lệ: ${validation.reason}`,
+          }],
+        };
+      }
+
+      // Cập nhật .env + process.env
+      const result = updatePat(newPat);
+
+      // Reload JiraClient để dùng PAT mới ngay
+      try {
+        jiraClient.updatePat(newPat);
+      } catch (e: any) {
+        return {
+          content: [{
+            type: "text",
+            text: `⚠️ Đã cập nhật .env nhưng không thể reload JiraClient: ${e.message}\n` +
+                  "Khởi động lại MCP Server để áp dụng PAT mới.",
+          }],
+        };
+      }
+
+      const lines = [
+        `✅ **Đã ${result.action === "updated" ? "cập nhật" : "thêm"} PAT thành công!**`,
         "",
+        `📁 File: \`${result.envPath}\``,
+        `🔐 PAT cũ: \`${result.previousMasked}\``,
+        `🔐 PAT mới: \`${result.newMasked}\``,
+        "",
+        "🔄 JiraClient đã được reload — các API call tiếp theo sẽ dùng PAT mới.",
+        "",
+        "💡 Để kiểm tra PAT hoạt động, thử gọi `list_issues` để xem issues.",
       ];
 
-      // ── 1. Custom fields (SPDA, Công đoạn, issuetype, priority) ──
-      try {
-        const meta = await jiraClient.getCreateMeta(projectKey, issueTypeName);
-        for (const [fieldId, field] of Object.entries(meta.fields)) {
-          if (field.allowedValues && field.allowedValues.length > 0) {
-            lines.push(`### ${field.name} (${fieldId})`);
-            lines.push(`Required: ${field.required ? "✅" : "❌"}`);
-            lines.push("Options:");
-            for (const opt of field.allowedValues) {
-              const label = opt.value || opt.name || "N/A";
-              lines.push(`  • id: ${opt.id} → "${label}"`);
-            }
-            lines.push("");
-          }
-        }
-      } catch {
-        // Fallback: createmeta không khả dụng → tìm issue gần nhất
-        lines.push(`⚠️ API createmeta không khả dụng — đọc từ issue gần nhất`, "");
-        try {
-          const searchData = await jiraClient.searchIssues(
-            `project = ${projectKey} ORDER BY created DESC`,
-            1
-          );
-          const latestIssue = searchData.issues?.[0];
-          if (latestIssue) {
-            const cfData = await jiraClient.getCustomFieldFromIssue(
-              latestIssue.key,
-              ["customfield_10100", "customfield_10101"]
-            );
-            if (cfData.customfield_10100) {
-              lines.push(`### SPDA (customfield_10100)`);
-              lines.push(`  • id: ${cfData.customfield_10100.id} → "${cfData.customfield_10100.value}"`);
-              lines.push("");
-            }
-            if (cfData.customfield_10101) {
-              lines.push(`### Công đoạn (customfield_10101)`);
-              lines.push(`  • id: ${cfData.customfield_10101.id} → "${cfData.customfield_10101.value}"`);
-              lines.push("");
-            }
-          }
-        } catch {
-          lines.push(`❌ Không thể đọc fallback data`, "");
-        }
-      }
-
-      // ── 2. Assignable users ──
-      try {
-        const users = await jiraClient.getAssignableUsers(projectKey);
-        if (users.length > 0) {
-          lines.push(`### Assignable Users`);
-          lines.push(`Tổng: ${users.length} thành viên`);
-          for (const u of users) {
-            const email = u.emailAddress ? ` (${u.emailAddress})` : "";
-            lines.push(`  • name: "${u.name}" → ${u.displayName}${email}`);
-          }
-          lines.push("");
-        }
-      } catch {
-        lines.push(`⚠️ Không thể lấy danh sách users`, "");
-      }
-
-      // ── 3. Epics đang mở ──
-      try {
-        const epics = await jiraClient.searchEpics(projectKey);
-        if (epics.length > 0) {
-          lines.push(`### Epics đang mở`);
-          lines.push(`Tổng: ${epics.length} epic`);
-          for (const e of epics) {
-            lines.push(`  • ${e.key} → "${e.fields.summary}" [${e.fields.status.name}]`);
-          }
-          lines.push("");
-        }
-      } catch {
-        lines.push(`⚠️ Không thể lấy danh sách Epics`, "");
-      }
-
       return {
-        content: [{
-          type: "text",
-          text: lines.join("\n") + getChainHint("get_create_meta"),
-        }],
+        content: [{ type: "text", text: lines.join("\n") }],
       };
     })
   );

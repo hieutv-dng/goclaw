@@ -2,10 +2,10 @@
 
 ## Overview
 
-mcp-jira-tools là Node.js/TypeScript project (~935 LOC) cung cấp MCP server cho Jira integration. Cấu trúc gọn gàng với 6 file chính: entry point, Jira client, tool definitions, formatter, utilities.
+mcp-jira-tools là Node.js/TypeScript project (~1851 LOC) cung cấp MCP server cho Jira integration. Cấu trúc gọn gàng với 7 file chính: entry point, Jira client, tool definitions, formatter, PAT manager, utilities.
 
-**Total LOC:** ~935
-**Files:** 6 source files + 2 config files
+**Total LOC:** ~1851
+**Files:** 7 source files + 2 config files
 **Language:** TypeScript (ES2022, strict mode)
 **Build:** tsc → dist/
 **Transport:** stdio (Claude Desktop) + remote (supergateway + ngrok)
@@ -16,12 +16,13 @@ mcp-jira-tools là Node.js/TypeScript project (~935 LOC) cung cấp MCP server c
 src/
 ├── index.ts (28 LOC)
 ├── jira/
-│   ├── client.ts (217 LOC)
-│   ├── tools.ts (365 LOC)
-│   └── formatter.ts (212 LOC)
+│   ├── client.ts (726 LOC)
+│   ├── tools.ts (655 LOC)
+│   ├── formatter.ts (212 LOC)
+│   └── pat-manager.ts (149 LOC) [NEW]
 └── shared/
     ├── index.ts (1 LOC)
-    └── utils.ts (84 LOC)
+    └── utils.ts (80 LOC)
 
 Config:
 ├── mcp-config.json — Safety config
@@ -42,14 +43,13 @@ const server = new McpServer({
   version: "1.0.0"
 });
 
-// Register 6 tools
-registerListMyOpenIssues(server);
+// Register 6 tools (via registerJiraTools)
+registerListIssues(server);
 registerGetIssueDetail(server);
 registerLogWork(server);
-registerUpdateIssueStatus(server);
-registerGetAvailableTransitions(server);
-registerAddComment(server);
+registerUpdateIssue(server);
 registerCreateIssue(server);
+registerManageJiraPat(server);
 
 // Connect stdio transport
 const transport = new StdioServerTransport();
@@ -61,12 +61,12 @@ server.connect(transport);
 - Single transport layer: stdio (không có HTTP binding ở đây)
 - Minimal error handling (relies on tool handlers)
 
-### 2. **src/jira/client.ts** (217 LOC)
-**Purpose:** Jira REST API v2 wrapper — singleton instance gọi API.
+### 2. **src/jira/client.ts** (726 LOC)
+**Purpose:** Jira REST API v2 wrapper — singleton instance gọi API, fuzzy matching, custom field resolution.
 
 **Class:** `JiraClient`
 
-**Methods:**
+**Core Methods:**
 
 | Method | Purpose | Returns |
 |---|---|---|
@@ -76,7 +76,22 @@ server.connect(transport);
 | `getTransitions(issueKey)` | Danh sách status có thể chuyển | `{transitions: Transition[]}` |
 | `transitionIssue(issueKey, transitionId, comment)` | Chuyển status | Void |
 | `addComment(issueKey, comment)` | Thêm comment | Comment ID |
-| `createIssue(projectKey, summary, description, type, priority)` | Tạo issue mới | Issue key (VD: XYZ-123) |
+| `createIssue(payload)` | Tạo issue mới (với custom fields) | Issue key (VD: XYZ-123) |
+
+**New Methods (Field Resolution & PAT):**
+
+| Method | Purpose | Returns |
+|---|---|---|
+| `updatePat(newPat)` | Swap PAT token at runtime (no restart) | `{previousMasked, newMasked, action}` |
+| `getCreateMeta()` | Parse QuickCreateIssue HTML cho field options | `{fields: {name, id, options[]}}` |
+| `getCustomFieldFromIssue(issueKey, fieldName)` | Fallback custom field reading | Field value |
+| `getAssignableUsers(projectKey)` | Danh sách users có thể assign | `User[]` |
+| `searchEpics(projectKey)` | Tìm epics đang mở trong project | `Issue[]` |
+| `resolveCustomFieldOption(fieldName, userInput)` | Fuzzy match user input vs allowed values | `{matched: string, suggestions: string[]}` |
+| `resolveAssignee(projectKey, userInput)` | Fuzzy match username | `{matched: User, suggestions: User[]}` |
+| `resolveEpicKey(projectKey, userInput)` | Fuzzy match epic name | `{matched: string, suggestions: string[]}` |
+| `calcSimilarity(a, b)` | Character-overlap similarity (0-1) | `number` |
+| `findBestOption(input, options)` | Multi-tier matching strategy | `{best, topThree}` |
 
 **Implementation Details:**
 
@@ -112,20 +127,24 @@ this.client.interceptors.response.use(
 );
 ```
 
-### 3. **src/jira/tools.ts** (365 LOC)
-**Purpose:** MCP tool registration — định nghĩa 6 tools, schema validation, handlers.
+### 3. **src/jira/tools.ts** (655 LOC)
+**Purpose:** MCP tool registration — định nghĩa 6 tools, schema validation, handlers, fuzzy matching.
 
-**Tools Registered:**
+**Tools Registered (6 total):**
 
 | Tool | Input Schema | Handler | Safety |
 |---|---|---|---|
-| `list_my_open_issues` | `{project?, maxResults?}` | `(ctx, args)` → searchIssues | No confirm |
-| `get_issue_detail` | `{key}` | searchIssue + drift detection | Drift warning |
+| `list_issues` | `{project?, assigneeFilter?, roleFilter?, statusFilter?, maxResults?}` | searchIssues + filters | No confirm |
+| `get_issue_detail` | `{key}` | getIssue + drift detection | Drift warning |
 | `log_work` | `{key, hours, date?, comment?}` | addWorklog | **CONFIRM** |
-| `update_issue_status` | `{key, status}` | getTransitions → transitionIssue | **CONFIRM** |
-| `get_available_transitions` | `{key}` | getTransitions | No confirm |
-| `add_comment` | `{key, comment}` | addComment | **CONFIRM** |
-| `create_issue` | `{project, summary, description, type, priority}` | createIssue | **CONFIRM** |
+| `update_issue` | `{key, status?, comment?, dryRun?}` | getTransitions → transitionIssue + addComment | **CONFIRM** |
+| `create_issue` | `{projectKey, issueType, summary, description, priority, labels, spda?, congDoan?, dueDate?, assignee?, epicKey?, dryRun?}` | createIssue + metadata + fuzzy resolve | **CONFIRM** |
+| `manage_jira_pat` | `{action: 'get'|'update', pat?}` | getCurrentPat() or updatePat() | Mixed (view=no, update=yes) |
+
+**Old Tools (REMOVED/RENAMED):**
+- `list_my_open_issues` → `list_issues` (expanded with filters)
+- `update_issue_status` + `add_comment` → merged into `update_issue`
+- `get_available_transitions` → removed (available via `update_issue` dryRun)
 
 **Key Implementation:**
 
@@ -213,7 +232,26 @@ User cannot login with SSO...
 - **Date Formatting:** Vietnamese locale (vi-VN) — 27/03/2026 10:30
 - **Jira Markup → Markdown:** Remove wiki formatting, convert to standard MD
 
-### 5. **src/shared/utils.ts** (84 LOC)
+### 5.5 **src/jira/pat-manager.ts** (149 LOC) [NEW]
+**Purpose:** PAT lifecycle management — view/update token at runtime without restart.
+
+**Functions:**
+
+| Function | Purpose | Returns |
+|---|---|---|
+| `getCurrentPat()` | Read JIRA_PAT from .env, return metadata | `{pat, envPath, exists, masked}` |
+| `updatePat(newPat)` | Write to .env, update process.env | `{previousMasked, newMasked, action}` |
+| `validatePat(pat)` | Basic validation (non-empty, ≥10 chars) | `{valid: boolean, message?: string}` |
+| `maskPat(pat)` | Hide credentials (first 4 + "****" + last 4) | `string` |
+
+**Env File Resolution:**
+```
+1. ENV_FILE_PATH env var (if set)
+2. .env in project root
+3. .env in CWD
+```
+
+### 6. **src/shared/utils.ts** (80 LOC)
 **Purpose:** Error handling + tool chaining utility.
 
 **Functions:**
@@ -224,17 +262,16 @@ User cannot login with SSO...
 | `withErrorHandler(handler)` | Try-catch wrapper for all tool handlers |
 | `getChainHint(toolName)` | Return next tool suggestion |
 
-**TOOL_CHAINING Map:**
+**TOOL_CHAINING Map (UPDATED):**
 
 ```typescript
 const TOOL_CHAINING = {
-  'list_my_open_issues': 'get_issue_detail',
-  'get_issue_detail': 'log_work or update_issue_status',
-  'log_work': 'add_comment or update_issue_status',
-  'update_issue_status': 'add_comment or create_issue',
-  'add_comment': 'log_work or update_issue_status',
-  'create_issue': 'add_comment',
-  'get_available_transitions': 'update_issue_status'
+  'list_issues': 'get_issue_detail or create_issue',
+  'get_issue_detail': 'log_work or update_issue or manage_jira_pat',
+  'log_work': 'update_issue',
+  'update_issue': 'list_issues',
+  'create_issue': 'get_issue_detail',
+  'manage_jira_pat': '(no chain)'
 };
 ```
 
@@ -248,7 +285,7 @@ formatToolError(new Error("API timeout"))
 → { code: "INTERNAL_ERROR", message: "API timeout" }
 ```
 
-### 6. **src/shared/index.ts** (1 LOC)
+### 7. **src/shared/index.ts** (1 LOC)
 **Purpose:** Re-exports (usually empty or minimal).
 
 ```typescript
@@ -257,7 +294,7 @@ export * from './utils.ts';
 
 ## Configuration Files
 
-### **mcp-config.json**
+### **mcp-config.json** (UPDATED)
 Safety configuration:
 
 ```json
@@ -265,15 +302,15 @@ Safety configuration:
   "tools": {
     "requireConfirmation": [
       "log_work",
-      "update_issue_status",
+      "update_issue",
       "create_issue",
-      "add_comment"
+      "manage_jira_pat"
     ]
   }
 }
 ```
 
-MCP SDK reads này để prompt user confirmation trước execute.
+MCP SDK reads này để prompt user confirmation trước execute. Note: `update_issue` merged old `update_issue_status` + `add_comment`.
 
 ### **tsconfig.json**
 ```json
@@ -405,9 +442,9 @@ index.ts
 
 | Metric | Value | Note |
 |---|---|---|
-| Total LOC | ~935 | Source only (excl. dist/, node_modules) |
+| Total LOC | ~1851 | Source only (excl. dist/, node_modules) |
 | Entry point | 28 LOC | Minimal, clean |
-| Longest file | tools.ts (365 LOC) | Could split into 2 files later |
+| Longest file | client.ts (726 LOC) | Major growth: fuzzy matching + field resolution |
 | External deps | 4 prod | Minimal, well-chosen |
 | Dev deps | 3 | tsx, typescript, @types/node |
 | Test coverage | 0% | No unit tests (optional for v1) |
@@ -500,6 +537,11 @@ server.setRequestHandler(Tool, async (req: ToolRequest) => {
 - **MCP Spec:** https://modelcontextprotocol.io/
 - **Update Cycle:** Semi-annual (aligns with Jira releases)
 - **Known Limitations:**
-  - No custom field support (hardcoded field IDs)
-  - No Jira Cloud support (OAuth not implemented)
+  - No Jira Cloud support (OAuth not implemented, PAT only)
   - Drift detection heuristic (not 100% accurate)
+  - Custom field support: hardcoded fields (spda, congDoan) + fallback resolution
+- **Recent Changes (v1.1):**
+  - Added PAT runtime management (manage_jira_pat tool)
+  - Enhanced create_issue with fuzzy field matching
+  - Merged update_issue_status + add_comment → update_issue
+  - Expanded list_issues with filtering (assignee, role, status)

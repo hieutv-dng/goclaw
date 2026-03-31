@@ -34,8 +34,9 @@
 Claude Desktop / Claude Code
         ↓ (MCP protocol via stdio)
 mcp-jira-tools Server (Node.js/TypeScript)
-        ├── Tools: list, read, logwork, transition, comment, create, status
-        ├── JiraClient: Jira REST API v2 (axios + PAT auth)
+        ├── 6 Tools: list_issues, get_issue_detail, log_work, update_issue, create_issue, manage_jira_pat
+        ├── JiraClient: Jira REST API v2 (axios + PAT auth) + fuzzy matching
+        ├── PATManager: PAT runtime updates (no restart needed)
         ├── Formatter: Markdown output for AI comprehension
         └── Error Handler: Safety validation + confirmation flow
         ↓
@@ -73,6 +74,12 @@ Jira Server/Data Center (REST API v2)
 ### Acceptance Criteria
 
 - ✅ All 6 core tools callable from Claude Desktop/Code
+  - list_issues (search + filter)
+  - get_issue_detail (view issue + drift detection)
+  - log_work (record hours)
+  - update_issue (transition + comment)
+  - create_issue (with fuzzy field matching)
+  - manage_jira_pat (PAT viewer/updater)
 - ✅ Jira responses formatted as markdown (readable for AI)
 - ✅ Write operations require user confirmation (CLI prompts)
 - ✅ Drift detection warns when issue outdated
@@ -80,6 +87,7 @@ Jira Server/Data Center (REST API v2)
 - ✅ Error messages clear (API errors, auth failure, validation)
 - ✅ Remote deployment script (ngrok tunnel) works end-to-end
 - ✅ No hardcoded secrets in code (env vars only)
+- ✅ Fuzzy field matching for create_issue (spda, congDoan, assignee, epic)
 
 ## Technical Constraints
 
@@ -110,17 +118,19 @@ JIRA_PAT=...                             # Personal Access Token (Bearer auth)
 JIRA_DEFAULT_PROJECT=XYZ                 # Default project key (optional)
 ```
 
-### mcp-config.json
+### mcp-config.json (UPDATED)
 
 Safety configuration defining which tools require user confirmation:
 
 ```json
 {
   "tools": {
-    "requireConfirmation": ["log_work", "update_issue_status", "create_issue", "add_comment"]
+    "requireConfirmation": ["log_work", "update_issue", "create_issue", "manage_jira_pat"]
   }
 }
 ```
+
+**Changes:** `update_issue_status` + `add_comment` merged → `update_issue`. Added `manage_jira_pat` for PAT updates.
 
 ## Dependencies
 
@@ -151,7 +161,8 @@ Safety configuration defining which tools require user confirmation:
 - [ ] Jira Cloud support (OAuth flow)
 - [ ] Issue search with advanced filters (JQL builder UI)
 - [ ] Bulk operations (transition multiple issues)
-- [ ] Custom field support (dynamic schema from Jira)
+- [⚒️] Custom field support (PARTIALLY DONE: hardcoded fields + fuzzy resolve fallback)
+- [ ] Dynamic custom field schema (metadata from Jira createmeta)
 - [ ] Webhook notifications (issue updates → Claude)
 - [ ] Performance dashboard (API call metrics, response times)
 

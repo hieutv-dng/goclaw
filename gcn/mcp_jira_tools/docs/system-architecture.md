@@ -12,14 +12,13 @@
 │ mcp-jira-tools Server (Node.js/TypeScript)          │
 ├─────────────────────────────────────────────────────┤
 │ ┌─────────────────┐  ┌──────────────────────────┐   │
-│ │ MCP Server      │  │ Tool Handlers (7 tools)  │   │
-│ │ - connect       │  │ - list_my_open_issues    │   │
+│ │ MCP Server      │  │ Tool Handlers (6 tools)  │   │
+│ │ - connect       │  │ - list_issues            │   │
 │ │ - resources     │  │ - get_issue_detail       │   │
 │ │ - tools         │  │ - log_work               │   │
-│ │ - prompts       │  │ - update_issue_status    │   │
-│ │                 │  │ - get_available_trans    │   │
-│ │                 │  │ - add_comment            │   │
+│ │ - prompts       │  │ - update_issue           │   │
 │ │                 │  │ - create_issue           │   │
+│ │                 │  │ - manage_jira_pat        │   │
 │ └─────────────────┘  └──────────────────────────┘   │
 │         ↓                    ↓                       │
 │  ┌──────────────────────────────────┐               │
@@ -117,13 +116,12 @@ User Request
 
 | Tool | Input | Processing | Output |
 |---|---|---|---|
-| `list_my_open_issues` | JQL query | searchIssues() | Issue list table |
+| `list_issues` | JQL + filters | searchIssues() + filter | Issue list table |
 | `get_issue_detail` | Issue key | getIssue() + drift check | Detail markdown + warning |
 | `log_work` | key, hours, date | addWorklog() | Confirmation message |
-| `update_issue_status` | key, status | getTransitions() → transitionIssue() | New status message |
-| `get_available_transitions` | key | getTransitions() | Available status list |
-| `add_comment` | key, comment | addComment() | Comment ID + preview |
-| `create_issue` | project, summary, etc. | createIssue() | New issue key + link |
+| `update_issue` | key, status, comment | getTransitions() → transitionIssue() + addComment() | New status message |
+| `create_issue` | project, summary, fields | createIssue() + fuzzy resolve custom fields | New issue key + link |
+| `manage_jira_pat` | action: get/update | getCurrentPat() or updatePat() | PAT metadata or update result |
 
 **Safety Layer:**
 ```
@@ -375,42 +373,38 @@ User sees drift warning, can call log_work or updateIssueStatus next
 - Invalid PAT → 401 API response → `AUTHENTICATION_FAILED` error
 - PAT with insufficient permissions → 403 API response → `PERMISSION_DENIED` error
 
-## Tool Chaining Map
+## Tool Chaining Map (UPDATED)
 
 ```
 Entry point:
-  list_my_open_issues
+  list_issues
     ↓
     ├─→ get_issue_detail (see details)
     │     ↓
     │     ├─→ log_work (record hours)
-    │     ├─→ update_issue_status (change status)
-    │     ├─→ add_comment (discuss)
-    │     └─→ get_available_transitions (check possible statuses)
+    │     ├─→ update_issue (change status + comment)
+    │     └─→ manage_jira_pat (update token if needed)
     │
     └─→ create_issue (report new issue)
          ↓
-         ├─→ add_comment
-         └─→ get_available_transitions
+         └─→ get_issue_detail
 
 Workflow:
-  1. list_my_open_issues → (see what's open)
+  1. list_issues → (see what's open)
   2. get_issue_detail → (pick one issue)
   3. log_work → (record effort)
-  4. add_comment → (leave note)
-  5. update_issue_status → (move to Done)
+  4. update_issue → (add comment + move to Done)
 ```
 
-**chainHint Values:**
+**chainHint Values (UPDATED):**
 ```typescript
 {
-  'list_my_open_issues': 'get_issue_detail or create_issue',
-  'get_issue_detail': 'log_work or update_issue_status or add_comment',
-  'log_work': 'add_comment or update_issue_status',
-  'update_issue_status': 'add_comment or log_work',
-  'get_available_transitions': 'update_issue_status',
-  'add_comment': 'log_work or update_issue_status',
-  'create_issue': 'add_comment'
+  'list_issues': 'get_issue_detail or create_issue',
+  'get_issue_detail': 'log_work or update_issue or manage_jira_pat',
+  'log_work': 'update_issue',
+  'update_issue': 'list_issues',
+  'create_issue': 'get_issue_detail',
+  'manage_jira_pat': '(no chain)'
 }
 ```
 

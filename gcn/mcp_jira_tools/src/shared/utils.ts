@@ -62,15 +62,11 @@ export const TOOL_CHAINING: Record<string, string> = {
   list_issues:
     "→ Tiếp: `get_issue_detail` để đọc chi tiết task cần làm.",
   get_issue_detail:
-    "→ Tiếp: `log_work` để ghi nhận effort, hoặc `update_issue_status` để chuyển trạng thái.",
+    "→ Tiếp: `log_work` để ghi nhận effort, hoặc `update_issue` để chuyển trạng thái / thêm comment.",
   log_work:
-    "→ Tiếp: `update_issue_status` để chuyển trạng thái task.",
-  update_issue_status:
+    "→ Tiếp: `update_issue` để chuyển trạng thái task.",
+  update_issue:
     "→ Tiếp: Task đã hoàn tất! Hoặc `list_issues` để xem task tiếp theo.",
-  get_available_transitions:
-    "→ Tiếp: `update_issue_status` với tên transition phù hợp.",
-  add_comment:
-    "→ Tiếp: `update_issue_status` hoặc `log_work` nếu đã hoàn thành.",
   create_issue:
     "→ Tiếp: `get_issue_detail` để xem issue vừa tạo.",
 };

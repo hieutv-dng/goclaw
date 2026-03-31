@@ -9,11 +9,11 @@ MCP (Model Context Protocol) server providing Jira integration for Claude AI ass
 
 ## Features
 
-- **7 Tools:** List issues, get details, log work, transition issues, add comments, create issues, check status
+- **6 Tools:** List issues, get details, log work, update issues (transition + comment), create issues, manage PAT
 - **Vietnamese Descriptions:** Optimized for Vietnamese dev teams
 - **Drift Detection:** Warns when issue description may be outdated vs comments
 - **Tool Chaining:** Suggests next logical action after each tool invocation
-- **Safety-First:** Write operations (log work, transition, comment, create) require user confirmation
+- **Safety-First:** Write operations (log work, update issue, create issue) require user confirmation
 - **Markdown Output:** AI-friendly formatting with priority emojis, quality analysis
 - **Remote Deployment:** Ngrok tunnel support for remote Claude access
 
@@ -92,33 +92,38 @@ Restart Claude Desktop. Tools now available in conversations.
 In Claude Desktop, try:
 
 ```
-List my open Jira issues
+Show me open issues
 ```
 
-Claude will call `list_my_open_issues` tool. You'll see formatted issue list.
+Claude will call `list_issues` tool. You'll see formatted issue list.
 
 ## Tools Reference
 
-### 1. list_my_open_issues
+### 1. list_issues
 
-**Description:** Liệt kê các issue đang mở của người dùng
+**Description:** Lấy danh sách Jira issues theo filter linh hoạt. Mặc định: issues được assign cho tôi, đang mở.
+
 **Input:**
-- `project` (optional, string): Jira project key (e.g., "XYZ"). Default: JIRA_DEFAULT_PROJECT or empty
-- `maxResults` (optional, number): Max issues to return. Default: 10
+- `projectKey` (optional, string): Filter theo project key cụ thể. Default: tất cả projects
+- `assigneeFilter` (optional, string): User để filter. Default: `currentUser()` (tôi). Khác: `unassigned`, `any`, username cụ thể
+- `roleFilter` (optional, string): Role của user. Default: `assignee`. Khác: `reporter`, `watcher`
+- `statusFilter` (optional, string): Nhóm trạng thái. Default: `open`. Khác: `active`, `done`, `all`
+- `customJql` (optional, string): JQL tùy chỉnh — full override. VD: `project = VNPTAI AND sprint in openSprints()`
+- `maxResults` (optional, number): Số lượng tối đa. Default: 20, Max: 50
 
-**Output:** Markdown table with priority, key, summary, status, points
+**Output:** Markdown table with priority, key, summary, status
 
 **Example:**
 
 ```
 User: "Show me open issues"
-Claude calls: list_my_open_issues({ project: "XYZ", maxResults: 10 })
+Claude calls: list_issues({ assigneeFilter: "currentUser()", statusFilter: "open", maxResults: 20 })
 
 Response:
-| Priority | Key | Summary | Status | Points |
-|---|---|---|---|---|
-| 🔴 High | XYZ-123 | Fix login bug | In Progress | 5 |
-| 🟡 Medium | XYZ-124 | Add dark mode | To Do | 8 |
+| Priority | Key | Summary | Status |
+|---|---|---|---|
+| 🔴 High | XYZ-123 | Fix login bug | In Progress |
+| 🟡 Medium | XYZ-124 | Add dark mode | To Do |
 ```
 
 **Next Step Suggestion:** `get_issue_detail`
@@ -164,7 +169,7 @@ User cannot login with SSO...
 - Add comment or transition to Code Review
 ```
 
-**Next Step Suggestion:** `log_work` or `update_issue_status`
+**Next Step Suggestion:** `log_work` or `update_issue`
 
 ---
 
@@ -193,126 +198,196 @@ User confirms
 Response: "✅ Logged 4 hours on XYZ-123 (worklog ID: 123456)"
 ```
 
-**Next Step Suggestion:** `add_comment` or `update_issue_status`
+**Next Step Suggestion:** `log_work` or `update_issue`
 
 ---
 
-### 4. update_issue_status
+### 4. update_issue
 
-**Description:** Chuyển issue sang status khác
+**Description:** Cập nhật Jira issue: chuyển trạng thái, thêm comment, hoặc xem transitions khả dụng.
+
 **Input:**
-- `key` (required, string): Issue key
-- `status` (required, string): Target status name (e.g., "In Progress", "Done")
+- `issueKey` (required, string): Issue key (e.g., "VNPTAI-123")
+- `dryRun` (optional, boolean): true = chỉ xem transitions khả dụng, không thay đổi gì. Default: false
+- `transitionName` (optional, string): Tên trạng thái muốn chuyển (e.g., "In Progress", "Done"). Bỏ trống nếu chỉ muốn comment
+- `resolution` (optional, string): Resolution khi đóng task (e.g., "Done", "Fixed"). Chỉ cần khi chuyển sang Done/Resolved
+- `comment` (optional, string): Ghi chú kèm theo. Có thể dùng độc lập hoặc kèm transition
 
 **Safety:** Requires user confirmation before executing
 
-**Output:** New status confirmation + available transitions
+**Output:**
+- dryRun mode: List of available transitions
+- Comment-only: Confirmation with comment preview
+- Transition mode: Status change confirmation with optional resolution
 
-**Validation:** Checks if target status is valid for current status (via getTransitions)
+**Use Cases:**
 
-**Example:**
-
-```
-User: "Move XYZ-123 to Done"
-Claude calls: update_issue_status({ key: "XYZ-123", status: "Done" })
-
-[MCP asks for confirmation]
-User confirms
-
-Response: "✅ Transitioned XYZ-123 from 'In Progress' to 'Done'"
-```
-
-**Next Step Suggestion:** `add_comment`
-
----
-
-### 5. get_available_transitions
-
-**Description:** Xem danh sách status có thể chuyển cho issue
-**Input:**
-- `key` (required, string): Issue key
-
-**Output:** List of available target statuses with descriptions
-
-**Example:**
-
+1. **View available transitions (no changes):**
 ```
 User: "What statuses can I move XYZ-123 to?"
-Claude calls: get_available_transitions({ key: "XYZ-123" })
+Claude calls: update_issue({ issueKey: "XYZ-123", dryRun: true })
 
 Response:
-Current Status: In Progress
-
-Available Transitions:
-- Code Review (transition ID: 31)
-- Done (transition ID: 21)
-- Back to To Do (transition ID: 11)
+Các transition khả dụng cho XYZ-123:
+  • Code Review (id: 31)
+  • Done (id: 21)
+  • Back to To Do (id: 11)
 ```
 
-**Next Step Suggestion:** `update_issue_status`
-
----
-
-### 6. add_comment
-
-**Description:** Thêm comment vào issue
-**Input:**
-- `key` (required, string): Issue key
-- `comment` (required, string): Comment text (supports Jira markup or plain text)
-
-**Safety:** Requires user confirmation before executing
-
-**Output:** Confirmation with comment ID + preview
-
-**Example:**
-
+2. **Add comment only:**
 ```
 User: "Add a comment to XYZ-123: Fixed in commit abc1234"
-Claude calls: add_comment({ key: "XYZ-123", comment: "Fixed in commit abc1234" })
+Claude calls: update_issue({ issueKey: "XYZ-123", comment: "Fixed in commit abc1234" })
 
 [MCP asks for confirmation]
 User confirms
 
-Response: "✅ Added comment to XYZ-123 (comment ID: 654321)"
+Response: "✅ Đã thêm comment vào XYZ-123:\n\n> Fixed in commit abc1234"
 ```
 
-**Next Step Suggestion:** `log_work` or `update_issue_status`
-
----
-
-### 7. create_issue
-
-**Description:** Tạo issue mới
-**Input:**
-- `project` (required, string): Jira project key
-- `summary` (required, string): Issue title
-- `description` (required, string): Issue description (supports Jira markup)
-- `type` (required, string): Issue type (e.g., "Bug", "Task", "Story")
-- `priority` (required, string): Priority level (e.g., "High", "Medium", "Low")
-
-**Safety:** Requires user confirmation before executing
-
-**Output:** New issue key + direct link
-
-**Example:**
-
+3. **Transition with comment and resolution:**
 ```
-User: "Create a task in XYZ project: Add export to PDF feature, description: Users need to export reports as PDF, priority: Medium"
-Claude calls: create_issue({
-  project: "XYZ",
-  summary: "Add export to PDF feature",
-  description: "Users need to export reports as PDF",
-  type: "Task",
-  priority: "Medium"
+User: "Move XYZ-123 to Done"
+Claude calls: update_issue({ 
+  issueKey: "XYZ-123", 
+  transitionName: "Done", 
+  resolution: "Fixed",
+  comment: "Implementation complete, ready for testing"
 })
 
 [MCP asks for confirmation]
 User confirms
 
-Response: "✅ Created issue XYZ-456: Add export to PDF feature\nhttps://jira.company.com/browse/XYZ-456"
+Response: "✅ Đã cập nhật thành công!\n📌 Issue: XYZ-123\n🔄 Trạng thái mới: Done\n✔️ Resolution: Fixed"
 ```
 
-**Next Step Suggestion:** `add_comment`
+**Next Step Suggestion:** `log_work` or `create_issue`
+
+---
+
+### 5. create_issue
+
+**Description:** Tạo một Jira issue mới (Task, Sub-task, Bug, Story). Dùng dryRun=true để xem metadata (custom fields, users, epics) — không tạo issue.
+
+**Input:**
+- `projectKey` (required, string): Project key (e.g., "VNPTAI")
+- `dryRun` (optional, boolean): true = xem metadata, không tạo issue. Default: false
+- `issueType` (optional, string): Loại issue. Default: "Task". Khác: "Sub-task", "Bug", "Story"
+- `summary` (optional, string): Tiêu đề ngắn gọn (bắt buộc khi tạo)
+- `description` (optional, string): Mô tả chi tiết (bắt buộc khi tạo)
+- `parentKey` (optional, string): Key của issue cha (bắt buộc nếu Sub-task)
+- `priority` (optional, string): Mức độ ưu tiên (bắt buộc khi tạo). Values: "Highest", "High", "Medium", "Low", "Lowest"
+- `labels` (optional, array of strings): Danh sách labels
+- `spda` (optional, string): Mã SPDA (customfield_10100)
+- `congDoan` (optional, string): Công đoạn (customfield_10101)
+- `dueDate` (optional, string): Ngày hết hạn (YYYY-MM-DD format)
+- `assignee` (optional, string): Username của người được assign
+- `epicKey` (optional, string): Key của Epic muốn liên kết
+
+**Safety:** Requires user confirmation before executing
+
+**Output:**
+- dryRun mode: Metadata including custom fields, assignable users, available epics
+- Create mode: New issue key + direct link
+
+**Use Cases:**
+
+1. **View metadata before creating (dryRun):**
+```
+User: "Show me the metadata for GOCONNECT project"
+Claude calls: create_issue({ projectKey: "GOCONNECT", dryRun: true, issueType: "Task" })
+
+Response:
+📋 Create Meta — GOCONNECT / Task
+### SPDA (customfield_10100)
+Required: ✅
+Options:
+  • id: 10 → "VNPT GoConnect"
+  • id: 20 → "VNPT AI Platform"
+
+### Assignable Users
+Tổng: 5 thành viên
+  • name: "nghiath" → Nghĩa Thái (nghia@company.com)
+  ...
+
+### Epics đang mở
+  • GOCONNECT-100 → "Platform Architecture" [In Progress]
+```
+
+2. **Create new issue:**
+```
+User: "Create a task in GOCONNECT project: Implement OAuth integration, description: Add OAuth2 support for SSO, priority: High"
+Claude calls: create_issue({
+  projectKey: "GOCONNECT",
+  issueType: "Task",
+  summary: "Implement OAuth integration",
+  description: "Add OAuth2 support for SSO",
+  priority: "High",
+  labels: ["backend", "feature"],
+  spda: "VNPT GoConnect",
+  congDoan: "Development",
+  dueDate: "2026-04-15",
+  assignee: "nghiath"
+})
+
+[MCP asks for confirmation]
+User confirms
+
+Response: "✅ Đã tạo issue thành công!\n🔑 Key: GOCONNECT-456\n🔗 Link: https://jira.company.com/browse/GOCONNECT-456"
+```
+
+**Next Step Suggestion:** `log_work` or `update_issue`
+
+---
+
+### 6. manage_jira_pat
+
+**Description:** Quản lý Personal Access Token (PAT) của Jira.
+
+**Input:**
+- `action` (required, string): Hành động. Values: "view" (xem PAT hiện tại), "update" (cập nhật PAT mới)
+- `newPat` (optional, string): PAT mới (bắt buộc khi action = "update")
+
+**Safety:** Requires user confirmation before updating
+
+**Output:**
+- view mode: Current PAT info (masked), file path, Jira URL
+- update mode: Confirmation with old/new PAT comparison
+
+**Use Cases:**
+
+1. **View current PAT:**
+```
+User: "Show me my current Jira PAT"
+Claude calls: manage_jira_pat({ action: "view" })
+
+Response:
+🔑 **Jira PAT — Thông tin hiện tại**
+
+📁 File .env: `.env.local`
+📄 File tồn tại: ✅ Có
+🔐 PAT hiện tại: `{masked token}`
+🌐 Jira URL: `https://jira.company.com`
+```
+
+2. **Update PAT:**
+```
+User: "My PAT expired, update it"
+Claude calls: manage_jira_pat({ 
+  action: "update", 
+  newPat: "your-new-token-here" 
+})
+
+[MCP asks for confirmation]
+User confirms
+
+Response: "✅ Đã cập nhật PAT thành công!
+📁 File: `.env.local`
+🔐 PAT cũ: `{masked old}`
+🔐 PAT mới: `{masked new}`
+
+🔄 JiraClient đã được reload — các API call tiếp theo sẽ dùng PAT mới."
+```
 
 ---
 

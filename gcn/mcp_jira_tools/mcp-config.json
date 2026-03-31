@@ -6,9 +6,8 @@
   "safety": {
     "requireConfirmation": [
       "log_work",
-      "update_issue_status",
-      "create_issue",
-      "add_comment"
+      "update_issue",
+      "create_issue"
     ]
   }
 }

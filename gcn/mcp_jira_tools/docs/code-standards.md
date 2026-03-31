@@ -53,21 +53,25 @@ const hasDrift = false;
 const canTransition = true;
 ```
 
-#### Tool Names & Descriptions
+#### Tool Names & Descriptions (UPDATED)
 
 ```typescript
-// Tool names: snake_case (MCP convention)
-'list_my_open_issues'
-'get_issue_detail'
-'log_work'
-'update_issue_status'
-'get_available_transitions'
-'add_comment'
-'create_issue'
+// Tool names: snake_case (MCP convention) — 6 tools total
+'list_issues'           // list issues with filters
+'get_issue_detail'      // get single issue + drift detection
+'log_work'              // record work hours
+'update_issue'          // transition status + add comment (merged old tools)
+'create_issue'          // create new issue with custom field resolve
+'manage_jira_pat'       // view/update PAT token at runtime
 
 // Descriptions: Vietnamese + clear English terms
 'Liệt kê các issue đang mở của người dùng' // Đầu tiên dùng tiếng Việt
 ```
+
+**Removed Tools (merged or deleted):**
+- `list_my_open_issues` → `list_issues` (expanded with filters)
+- `update_issue_status` + `add_comment` → merged into `update_issue`
+- `get_available_transitions` → removed (available via `update_issue` dryRun)
 
 #### Error & Message Keys
 
@@ -125,12 +129,13 @@ export * from './utils.ts';
 src/
 ├── index.ts              — Entry point (connect server + transport)
 ├── jira/
-│   ├── client.ts         — JiraClient class + API methods
-│   ├── tools.ts          — Tool registration + handlers
+│   ├── client.ts         — JiraClient class + API methods + fuzzy matching
+│   ├── tools.ts          — Tool registration + handlers (6 tools)
+│   ├── pat-manager.ts    — PAT lifecycle management (NEW)
 │   └── formatter.ts      — Output formatting for AI
 └── shared/
     ├── index.ts          — Re-exports
-    └── utils.ts          — withErrorHandler, formatToolError, TOOL_CHAINING
+    └── utils.ts          — withErrorHandler, formatToolError, TOOL_CHAINING (updated)
 ```
 
 **Rationale:**
@@ -508,16 +513,20 @@ const storyPoints = issue.customfield_10029 ?? 0;
 ### CONSTANT_CASE for Config
 
 ```typescript
-// shared/utils.ts
+// shared/utils.ts (UPDATED)
 export const TOOL_CHAINING = {
-  'list_my_open_issues': 'get_issue_detail',
-  'get_issue_detail': 'log_work or update_issue_status',
-  // ...
+  'list_issues': 'get_issue_detail or create_issue',
+  'get_issue_detail': 'log_work or update_issue or manage_jira_pat',
+  'log_work': 'update_issue',
+  'update_issue': 'list_issues',
+  'create_issue': 'get_issue_detail',
+  'manage_jira_pat': '(no chain)'
 };
 
 export const DEFAULT_MAX_RESULTS = 10;
 export const API_TIMEOUT_MS = 15000;
 export const DRIFT_DETECTION_THRESHOLD = 75;
+export const PAT_MIN_LENGTH = 10;
 ```
 
 ### Enums (if needed in future)
