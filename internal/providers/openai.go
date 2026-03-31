@@ -70,6 +70,15 @@ func (p *OpenAIProvider) APIKey() string         { return p.apiKey }
 func (p *OpenAIProvider) APIBase() string        { return p.apiBase }
 func (p *OpenAIProvider) ProviderType() string   { return p.providerType }
 
+// schemaProviderName returns the most specific provider identifier for schema normalization.
+// Prefers providerType (from DB) over name for accurate profile matching.
+func (p *OpenAIProvider) schemaProviderName() string {
+	if p.providerType != "" {
+		return p.providerType
+	}
+	return p.name
+}
+
 // WithProviderType sets the DB provider_type for correct API endpoint routing in media tools.
 func (p *OpenAIProvider) WithProviderType(pt string) *OpenAIProvider {
 	p.providerType = pt
@@ -244,6 +253,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest, onChun
 		if err := json.Unmarshal([]byte(acc.rawArgs), &args); err != nil && acc.rawArgs != "" {
 			slog.Warn("openai_stream: failed to parse tool call arguments",
 				"tool", acc.Name, "raw_len", len(acc.rawArgs), "error", err)
+			acc.ParseError = fmt.Sprintf("malformed JSON (%d chars): %v", len(acc.rawArgs), err)
 		}
 		acc.Arguments = args
 		if acc.thoughtSig != "" {
@@ -252,7 +262,9 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest, onChun
 		result.ToolCalls = append(result.ToolCalls, acc.ToolCall)
 	}
 
-	if len(result.ToolCalls) > 0 {
+	// Only override finish_reason when stream wasn't truncated.
+	// Preserve "length" so agent loop can detect truncation and retry.
+	if len(result.ToolCalls) > 0 && result.FinishReason != "length" {
 		result.FinishReason = "tool_calls"
 	}
 
@@ -382,7 +394,7 @@ func (p *OpenAIProvider) buildRequestBody(model string, req ChatRequest, stream 
 	}
 
 	if len(req.Tools) > 0 {
-		body["tools"] = CleanToolSchemas(p.name, req.Tools)
+		body["tools"] = CleanToolSchemas(p.schemaProviderName(), req.Tools)
 		body["tool_choice"] = "auto"
 	}
 
@@ -486,14 +498,17 @@ func (p *OpenAIProvider) parseResponse(resp *openAIResponse) *ChatResponse {
 
 		for _, tc := range msg.ToolCalls {
 			args := make(map[string]any)
+			var parseErr string
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil && tc.Function.Arguments != "" {
 				slog.Warn("openai: failed to parse tool call arguments",
 					"tool", tc.Function.Name, "raw_len", len(tc.Function.Arguments), "error", err)
+				parseErr = fmt.Sprintf("malformed JSON (%d chars): %v", len(tc.Function.Arguments), err)
 			}
 			call := ToolCall{
-				ID:        tc.ID,
-				Name:      strings.TrimSpace(tc.Function.Name),
-				Arguments: args,
+				ID:         tc.ID,
+				Name:       strings.TrimSpace(tc.Function.Name),
+				Arguments:  args,
+				ParseError: parseErr,
 			}
 			if tc.Function.ThoughtSignature != "" {
 				call.Metadata = map[string]string{"thought_signature": tc.Function.ThoughtSignature}
@@ -501,7 +516,9 @@ func (p *OpenAIProvider) parseResponse(resp *openAIResponse) *ChatResponse {
 			result.ToolCalls = append(result.ToolCalls, call)
 		}
 
-		if len(result.ToolCalls) > 0 {
+		// Only override finish_reason when response wasn't truncated.
+		// Preserve "length" so agent loop can detect truncation and retry.
+		if len(result.ToolCalls) > 0 && result.FinishReason != "length" {
 			result.FinishReason = "tool_calls"
 		}
 	}
